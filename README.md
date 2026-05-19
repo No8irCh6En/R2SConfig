@@ -3,20 +3,6 @@
 把场景照片 + 物体多视角扫描照片 → 输出每个物体在场景相机系下的 `(R, t, s)`,
 以及对齐到场景的可视化 mesh。用于后续 Genesis 仿真 / GS 渲染的初始化配置。
 
-## 目录
-
-- [Pipeline 概览](#pipeline-概览)
-- [环境](#环境)
-- [素材准备](#素材准备)
-- [Quick start](#quick-start)
-- [单步运行](#单步运行)
-- [产物](#产物)
-- [坐标 / 矩阵约定](#坐标--矩阵约定)
-- [查看 pose 结果](#查看-pose-结果)
-- [辅助脚本](#辅助脚本)
-- [项目结构](#项目结构)
-- [常见问题](#常见问题)
-
 ---
 
 ## Pipeline 概览
@@ -183,75 +169,6 @@ verts_view = (verts_world * s) @ R + t
 
 ---
 
-## 查看 pose 结果
-
-### 简单看一下数字
-
-```bash
-python -c "
-import json, numpy as np
-d = json.load(open('outputs/full_workflow/scene.json'))
-for o in d['objects']:
-    print(f\"{o['name']}: scale={o['scale']:.4f}  t={o['translation']}\")"
-```
-
-### 转成人类读得懂的角度 (Euler / 轴角)
-
-```bash
-python -c "
-import json, numpy as np
-from scipy.spatial.transform import Rotation as Rot
-d = json.load(open('outputs/full_workflow/scene.json'))
-for o in d['objects']:
-    R = np.array(o['rotation'])
-    r = Rot.from_matrix(R)
-    print(o['name'])
-    print(f'  scale = {o[\"scale\"]:.4f}')
-    print(f'  t     = {o[\"translation\"]}')
-    print(f'  euler(XYZ deg) = {r.as_euler(\"XYZ\", degrees=True)}')
-    rv = r.as_rotvec(degrees=True)
-    print(f'  axis-angle = {rv}  |  norm = {np.linalg.norm(rv):.2f}°')"
-```
-
-### 看 4×4 transform 矩阵
-
-```bash
-python -c "
-import torch
-T = torch.load('outputs/full_workflow/black_mug_tree_transform.pt', weights_only=False)
-print(T)"
-```
-
-### 看 step3c 的 candidate 排序 (谁赢谁输)
-
-`pipeline_results.json` 里每个物体有 `candidate_log` 字段, 包含每个候选 init_R 跑完 Stage 1 后的 IoU / chamfer / score。
-
----
-
-## 辅助脚本
-
-### `yaw_sweep.py` — 绕 mesh 长轴旋转扫描
-
-排查 "yaw 角度是不是局部最优" 的问题。绕 mesh **PCA 长轴** (默认) 加扰动, 看 IoU + chamfer + 综合 score 怎么变。
-
-```bash
-python yaw_sweep.py --obj black_mug_tree
-python yaw_sweep.py --obj black_mug_tree --thetas -180,-90,0,90,180
-python yaw_sweep.py --obj black_mug_tree --axis-mode +Z   # 强制用 canonical +Z, 不用 PCA
-```
-
-输出 → `workdir/yaw_sweep_<obj>.png`
-
-### `show_sam3d_pose.py` — 可视化 SAM3D 给的原始 pose
-
-不经过 Real2Sim 优化, 直接渲染 step3d 的输出, 看 SAM3D 在 scene 上 "原汁原味" 估的位姿。
-
-```bash
-python show_sam3d_pose.py
-```
-
----
-
 ## 项目结构
 
 ```
@@ -273,8 +190,6 @@ R2SConfig/
 ├── sam3/                      ← Grounding-DINO + SAM2 仓库
 └── MV-SAM3D/                  ← SAM3D-objects 仓库
 ```
-
-**重要**: `sam3/` 和 `MV-SAM3D/` 是别人的仓库 (`.gitignore` 里排除), 不要随意改。需要的话在 R2SConfig 这层包一个 shim 即可。
 
 ---
 
