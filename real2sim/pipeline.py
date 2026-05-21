@@ -317,7 +317,8 @@ class Real2SimPipeline:
                     obj_name=result["name"],
                 )
                 result["metrics"] = metrics
-                per_obj_dir = out / "per_object"
+                viz_base = Path(cfg.viz_output_dir) if cfg.viz_output_dir else out
+                per_obj_dir = viz_base / "per_object"
                 per_obj_dir.mkdir(parents=True, exist_ok=True)
                 vis_img.save(per_obj_dir / f"{result['name']}_eval.png")
                 print(f"  Metrics {result['name']}:")

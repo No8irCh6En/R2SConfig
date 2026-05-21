@@ -47,42 +47,34 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 # ─────────────────────────────────────────────────────────────────────
-# 路径常量 —— 全部相对于 R2SConfig/ (本脚本所在目录)
+# 路径与配置: 集中在 pipeline_paths.py / pipeline_config.py.
+# 这里只保留 PROJECT_ROOT 和外部仓库目录 (别人的代码, 不动).
 # ─────────────────────────────────────────────────────────────────────
 
 PROJECT_ROOT = Path(__file__).resolve().parent          # R2SConfig/
-MV_SAM3D_DIR = PROJECT_ROOT / "MV-SAM3D"                # 别人的仓库，不动
-SAM3_DIR = PROJECT_ROOT / "sam3"                        # 别人的仓库，不动
-WORK_DIR = PROJECT_ROOT / "workdir"                     # 中间产物
-OUTPUT_DIR = PROJECT_ROOT / "outputs" / "full_workflow"  # 最终产物
+MV_SAM3D_DIR = PROJECT_ROOT / "MV-SAM3D"                # 别人的仓库, 不动
+SAM3_DIR = PROJECT_ROOT / "sam3"                        # 别人的仓库, 不动
 LOG_DIR = PROJECT_ROOT / "logs"
-VISUALIZATION_DIR = MV_SAM3D_DIR / "visualization"      # SAM3D 输出落点
+VISUALIZATION_DIR = MV_SAM3D_DIR / "visualization"      # SAM3D 写死的输出根, 我们 symlink 进 build/
 
 # 让 real2sim 包可被 import (顶层目录 == sys.path 第一个)
 sys.path.insert(0, str(PROJECT_ROOT))
 
-# ─────────────────────────────────────────────────────────────────────
-# 配置区 —— 按你的实验修改这里
-# ─────────────────────────────────────────────────────────────────────
+# 共享配置 / 路径解析器 (路径布局: 见 pipeline_paths.py 顶部 docstring)
+from pipeline_config import OBJECTS, SCENE_PROMPT, MASK_CONFIDENCE  # noqa: E402
+from pipeline_paths import (  # noqa: E402
+    resolve as resolve_paths,
+    obj_hash,
+    sanitize_filename as _sanitize_pp,
+    update_latest_symlink,
+    should_rebuild,
+    write_object_prompt_audit,
+    write_prompt_audit,
+    PipelinePaths,
+)
 
-# 每个物体: 名称, 多视角图片目录 (绝对路径), SAM3 mask prompt
-# 默认从 R2SConfig/assets/ 读 (我们自己的素材，不动 MV-SAM3D/assets/)。
-OBJECTS: List[Dict] = [
-    {"name": "red_mug",        "image_dir": PROJECT_ROOT / "assets/red_mug/images",        "prompt": "red mug"},
-    {"name": "black_mug_tree", "image_dir": PROJECT_ROOT / "assets/black_mug_tree/images", "prompt": "black straight object"},
-]
-
-# 场景定义
-SCENE_IMAGE = PROJECT_ROOT / "assets/scene.jpg"
-# 跟 OBJECTS prompt 保持一致, 避免 step3a 出的 scene mask 跟 step1+step2 重建的 mesh 对不上
-# (例如 "black mug tree" 在场景里会分割整套, 但我们 mesh 只重建了竖杆 "black straight object")。
-SCENE_PROMPT = "red mug. black straight object."
-
-# SAM3D 入口
-SAM3D_SCRIPT = "run_inference_weighted.py"   # 相对 MV-SAM3D/
-
-# Mask 置信度
-MASK_CONFIDENCE = 0.1
+# SAM3D 入口 (相对 MV-SAM3D/)
+SAM3D_SCRIPT = "run_inference_weighted.py"
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -147,8 +139,8 @@ def assert_env(required: str, sentinel_imports: List[str]):
 # 工具函数
 # ─────────────────────────────────────────────────────────────────────
 
-def sanitize_filename(name: str) -> str:
-    return re.sub(r"[^a-zA-Z0-9]+", "_", name).strip("_")
+# re-exported for step3d / step3e that import sanitize_filename from here
+sanitize_filename = _sanitize_pp
 
 
 def _make_serializable(results: Dict) -> Dict:
@@ -183,7 +175,9 @@ def step1_object_masks():
     from sam3.model_builder import build_sam3_image_model
     from sam3.model.sam3_image_processor import Sam3Processor
 
-    WORK_DIR.mkdir(parents=True, exist_ok=True)
+    paths = resolve_paths()
+    force = should_rebuild()
+
     print("[step1] loading SAM3 model...")
     model = build_sam3_image_model()
 
@@ -199,20 +193,29 @@ def step1_object_masks():
     for obj in OBJECTS:
         name = obj["name"]
         prompt = obj["prompt"]
-        src_dir = Path(obj["image_dir"])
+        src_dir = paths.object_images_dir(name)
         prompt_slug = sanitize_filename(prompt)
 
-        obj_dir = WORK_DIR / name
-        img_out = obj_dir / "images"
-        mask_out = obj_dir / prompt_slug
+        img_out = paths.object_images_link_dir(name, prompt)
+        mask_out = paths.object_masks_dir(name, prompt)
         img_out.mkdir(parents=True, exist_ok=True)
         mask_out.mkdir(parents=True, exist_ok=True)
+        write_object_prompt_audit(name, prompt, paths)
 
         if not src_dir.exists():
             print(f"[step1] [{name}] SKIP: {src_dir} 不存在")
             continue
 
+        # Cache hit: skip if mask dir already has the right number of masks (or REBUILD=1).
         exts = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
+        existing_imgs = [f for f in src_dir.iterdir() if f.is_file() and f.suffix.lower() in exts]
+        existing_masks = list(mask_out.glob("*_mask.png"))
+        if not force and existing_masks and len(existing_masks) >= len(existing_imgs):
+            print(f"[step1] [{name}] cache hit: {len(existing_masks)} mask(s) in {mask_out}; "
+                  f"REBUILD=1 to force.")
+            summary[name] = {"masks_dir": str(mask_out), "ok": len(existing_masks), "cached": True}
+            continue
+
         image_files = sorted(
             f for f in src_dir.iterdir()
             if f.is_file() and f.suffix.lower() in exts
@@ -268,7 +271,9 @@ def step1_object_masks():
 
         summary[name] = {"masks_dir": str(mask_out), "ok": per_obj_ok}
 
-    print(f"\n[step1] done. workdir = {WORK_DIR}")
+    print(f"\n[step1] done. build/objects/ dirs:")
+    for name, info in summary.items():
+        print(f"  {name}: {info}")
     print(json.dumps(summary, indent=2))
 
 
@@ -278,17 +283,19 @@ def step1_object_masks():
 
 def step2_sam3d_commands():
     banner("2", "sam3d-objects", "Print SAM3D mesh-reconstruction commands")
+    paths = resolve_paths()
     print(f"[step2] 请确认当前 env 为 sam3d-objects (pytorch3d + sam3d_objects)。")
     print(f"[step2] 切到 MV-SAM3D/ 目录跑下面的命令；输出会落到")
-    print(f"        {VISUALIZATION_DIR.relative_to(PROJECT_ROOT)}/...\n")
+    print(f"        MV-SAM3D/visualization/<basename(input_path)>/...\n")
 
     print(f"cd {MV_SAM3D_DIR}\n")
     for obj in OBJECTS:
         name = obj["name"]
-        prompt_slug = sanitize_filename(obj["prompt"])
-        input_path = (WORK_DIR / name).resolve()
-        img_dir = input_path / "images"
-        mask_dir = input_path / prompt_slug
+        prompt = obj["prompt"]
+        prompt_slug = sanitize_filename(prompt)
+        input_path = paths.build_object_dir(name, prompt).resolve()
+        img_dir = paths.object_images_link_dir(name, prompt)
+        mask_dir = paths.object_masks_dir(name, prompt)
 
         if not img_dir.exists() or not mask_dir.exists():
             print(f"# [{name}] SKIP: step 1 产物缺失 ({img_dir} 或 {mask_dir})")
@@ -312,8 +319,9 @@ def step2_sam3d_commands():
             f"    --image_names {image_names}\n"
         )
 
-    print(f"# 预期输出: {VISUALIZATION_DIR}/<obj_name>/<prompt_slug>/.../result.glb")
-    print(f"# 和         {VISUALIZATION_DIR}/<obj_name>/<prompt_slug>/.../params.npz\n")
+    print(f"# 预期输出: MV-SAM3D/visualization/<input_basename>/<prompt_slug>/<dated>/result.glb")
+    print(f"# fast_start.sh 会在跑完 SAM3D 后, 把最新 result.glb symlink 到")
+    print(f"#   <build_object_dir>/mesh.glb, 后续 step3 系列从这里读 mesh.\n")
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -321,16 +329,29 @@ def step2_sam3d_commands():
 # ─────────────────────────────────────────────────────────────────────
 
 def step3a_scene_segmentation(scene_image: str, scene_prompt: str):
-    banner("3a", "sam3", "Scene segmentation (SAM3) -> workdir/scene_masks.pt")
+    banner("3a", "sam3", "Scene segmentation (SAM3) -> build/scenes/<scene>/prompts/<prompt_id>/scene_masks.pt")
     assert_env("sam3", ["sam3.model_builder", "sam3.model.sam3_image_processor"])
 
     import torch
     from PIL import Image, ImageDraw
     from real2sim.segmentation import GroundedSAM
 
-    WORK_DIR.mkdir(parents=True, exist_ok=True)
+    paths = resolve_paths()
+    force = should_rebuild()
+    paths.build_prompt_dir.mkdir(parents=True, exist_ok=True)
+    write_prompt_audit(paths)
+
+    out_path = paths.scene_masks_path
+    overlay_path = paths.scene_masks_overlay_path
+    inpaint_path = paths.inpainted_image_path
+
+    if not force and out_path.exists() and inpaint_path.exists():
+        print(f"[step3a] cache hit: {out_path} + {inpaint_path} exist; REBUILD=1 to force.")
+        return
+
     print(f"[step3a] scene image = {scene_image}")
     print(f"[step3a] prompt      = '{scene_prompt}'")
+    print(f"[step3a] output dir  = {paths.build_prompt_dir}")
 
     image = Image.open(scene_image).convert("RGB")
     sam = GroundedSAM(device="cuda")
@@ -344,7 +365,6 @@ def step3a_scene_segmentation(scene_image: str, scene_prompt: str):
     for i, lab in enumerate(labels):
         print(f"  [{i}] '{lab}'  score={scores[i].item():.3f}")
 
-    out_path = WORK_DIR / "scene_masks.pt"
     torch.save(
         {
             "image_path": str(scene_image),
@@ -363,9 +383,8 @@ def step3a_scene_segmentation(scene_image: str, scene_prompt: str):
     for i, b in enumerate(boxes.tolist()):
         draw.rectangle(b, outline=(255, 0, 0), width=3)
         draw.text((b[0] + 4, b[1] + 4), labels[i], fill=(255, 0, 0))
-    vis_path = WORK_DIR / "scene_masks_overlay.png"
-    vis.save(vis_path)
-    print(f"[step3a] overlay -> {vis_path}")
+    vis.save(overlay_path)
+    print(f"[step3a] overlay -> {overlay_path}")
 
     # ── Inpaint background here (sam3 env can pip install LaMa).
     # step 3c (sam3d-objects env) loads the result and skips its own inpaint.
@@ -381,7 +400,6 @@ def step3a_scene_segmentation(scene_image: str, scene_prompt: str):
                       " step 3c will fall back to original image for depth.")
             else:
                 inpainted = inpainter.inpaint(image, combined_mask, refine_iters=0)
-                inpaint_path = WORK_DIR / "inpainted.png"
                 inpainted.save(inpaint_path)
                 print(f"[step3a] inpainted -> {inpaint_path}")
         except Exception as e:
@@ -400,6 +418,9 @@ def step3b_scene_pointmap(scene_image: str, user_K: Optional[List[float]] = None
     user_K: 可选 [fx, fy, cx, cy]，单位像素。提供后：
         (a) 由 fx + 图像宽推 horizontal FoV，作为 MoGe.infer(fov_x=...) 的提示；
         (b) 保存到 scene_intrinsics.npy 的也是用户的 K，不是 MoGe 预测的。
+
+    Output: paths.build_moge_dir/{scene_pointmap.npy, scene_intrinsics.npy}
+    (scene-only, prompt-independent → 同一 scene 不同 prompt 复用).
     """
     banner("3b", "sam3d-objects", "Scene metric pointmap via MoGe")
     assert_env("sam3d-objects", ["torch", "moge.model.v1"])
@@ -410,7 +431,17 @@ def step3b_scene_pointmap(scene_image: str, user_K: Optional[List[float]] = None
     from PIL import Image
     from moge.model.v1 import MoGeModel
 
-    WORK_DIR.mkdir(parents=True, exist_ok=True)
+    paths = resolve_paths()
+    force = should_rebuild()
+    paths.build_moge_dir.mkdir(parents=True, exist_ok=True)
+    pm_path = paths.scene_pointmap_path
+    K_path = paths.scene_intrinsics_path
+
+    if not force and pm_path.exists() and K_path.exists() and user_K is None:
+        print(f"[step3b] cache hit: {pm_path} + {K_path} exist; REBUILD=1 to force.")
+        print(f"         (note: cache is keyed on scene_id only; pass user K with --K to force re-run.)")
+        return
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     image = Image.open(scene_image).convert("RGB")
@@ -461,8 +492,6 @@ def step3b_scene_pointmap(scene_image: str, user_K: Optional[List[float]] = None
         dtype=np.float32,
     )
 
-    pm_path = WORK_DIR / "scene_pointmap.npy"
-    K_path = WORK_DIR / "scene_intrinsics.npy"
     np.save(pm_path, points_p3d.cpu().numpy().astype(np.float32))
     np.save(K_path, K_abs)
 
@@ -476,28 +505,63 @@ def step3b_scene_pointmap(scene_image: str, user_K: Optional[List[float]] = None
 # Step 3c: Real2Sim 位姿优化                    (env: sam3d-objects)
 # ─────────────────────────────────────────────────────────────────────
 
-def find_glb_files(mesh_dir: Path, object_names: List[str]) -> Dict[str, Path]:
-    found = {}
+def find_glb_files(object_names: List[str], paths: Optional[PipelinePaths] = None) -> Dict[str, Path]:
+    """Per-object mesh paths under new build layout.
+
+    Order of resolution per name:
+      1. paths.object_mesh_link(name, prompt) — symlink we maintain (preferred)
+      2. Newest result.glb under MV-SAM3D/visualization/<name>__<hash>/<slug>/ — written by step2
+      3. Newest result.glb under MV-SAM3D/visualization/<name>*/.../result.glb — legacy
+    """
+    if paths is None:
+        paths = resolve_paths()
+    name_to_prompt = {o["name"]: o["prompt"] for o in OBJECTS}
+    found: Dict[str, Path] = {}
     for name in object_names:
-        direct = mesh_dir / f"{name}.glb"
-        if direct.exists():
-            found[name] = direct
+        prompt = name_to_prompt.get(name)
+        # (1) maintained symlink
+        if prompt is not None:
+            link = paths.object_mesh_link(name, prompt)
+            if link.exists():
+                found[name] = link.resolve()
+                continue
+        # (2) post-step2 by hashed input_path basename
+        if prompt is not None:
+            hashed_basename = paths.build_object_dir(name, prompt).name
+            cands = list(VISUALIZATION_DIR.glob(f"{hashed_basename}/**/result.glb"))
+            if cands:
+                found[name] = max(cands, key=lambda p: p.stat().st_mtime)
+                continue
+        # (3) legacy fallback (pre-refactor layout)
+        cands = list(VISUALIZATION_DIR.glob(f"{name}*/**/result.glb"))
+        if cands:
+            found[name] = max(cands, key=lambda p: p.stat().st_mtime)
             continue
-        sub = mesh_dir / name / "result.glb"
-        if sub.exists():
-            found[name] = sub
-            continue
-        candidates = list(mesh_dir.glob(f"**/{name}*.glb"))
-        if candidates:
-            # 取**最新**的 mesh (按 mtime), 不然 SAM3D 重跑后老 mesh 还会被用
-            found[name] = max(candidates, key=lambda p: p.stat().st_mtime)
-            continue
-        candidates = list(VISUALIZATION_DIR.glob(f"{name}*/**/result.glb"))
-        if candidates:
-            found[name] = max(candidates, key=lambda p: p.stat().st_mtime)
-            continue
-        print(f"  [WARN] No .glb found for '{name}' in {mesh_dir} (or visualization/)")
+        print(f"  [WARN] No .glb found for '{name}'.")
     return found
+
+
+def link_object_mesh(paths: PipelinePaths) -> None:
+    """After step2, populate build/objects/<obj>__<hash>/mesh.glb as a symlink to the
+    latest MV-SAM3D result.glb. Idempotent. Used by fast_start.sh after step2.
+    """
+    for obj in OBJECTS:
+        name = obj["name"]
+        prompt = obj["prompt"]
+        hashed_basename = paths.build_object_dir(name, prompt).name
+        cands = list(VISUALIZATION_DIR.glob(f"{hashed_basename}/**/result.glb"))
+        if not cands:
+            cands = list(VISUALIZATION_DIR.glob(f"{name}*/**/result.glb"))
+        if not cands:
+            print(f"[link_object_mesh] [{name}] no result.glb found under {VISUALIZATION_DIR}")
+            continue
+        latest = max(cands, key=lambda p: p.stat().st_mtime)
+        link = paths.object_mesh_link(name, prompt)
+        link.parent.mkdir(parents=True, exist_ok=True)
+        if link.is_symlink() or link.exists():
+            link.unlink()
+        link.symlink_to(latest)
+        print(f"[link_object_mesh] {name}: {link} → {latest}")
 
 
 def load_glb_as_pytorch3d(path: Path, device, target_triangles: int = 5000):
@@ -721,10 +785,11 @@ def step3c_real2sim(
     import torch
     from real2sim import Real2SimPipeline, PipelineConfig
 
+    paths = resolve_paths()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    mask_file = WORK_DIR / "scene_masks.pt"
+    mask_file = paths.scene_masks_path
     if not mask_file.exists():
         print(f"[ERROR] {mask_file} 不存在。请先在 sam3 env 跑 `--step 3a`。")
         sys.exit(2)
@@ -735,7 +800,7 @@ def step3c_real2sim(
         print(f"   step3a: {bundle['image_path']}")
         print(f"   step3c: {scene_image}")
 
-    pointmap_file = WORK_DIR / "scene_pointmap.npy"
+    pointmap_file = paths.scene_pointmap_path
     metric_pointmap = None
     if pointmap_file.exists():
         metric_pointmap = torch.from_numpy(np.load(pointmap_file)).float()
@@ -764,7 +829,7 @@ def step3c_real2sim(
         R_scene = torch.eye(3, device=device)
 
     # MoGe 估出来的内参（step3b 保存）。没有就走默认 60° FoV。
-    K_file = WORK_DIR / "scene_intrinsics.npy"
+    K_file = paths.scene_intrinsics_path
     K = None
     if K_file.exists():
         K = torch.from_numpy(np.load(K_file)).float()
@@ -772,7 +837,7 @@ def step3c_real2sim(
     else:
         print(f"[step3c] {K_file} 不存在；pipeline 会用默认 60° FoV")
 
-    inpaint_file = WORK_DIR / "inpainted.png"
+    inpaint_file = paths.inpainted_image_path
     precomputed_inpainted = None
     if inpaint_file.exists():
         from PIL import Image as _Image
@@ -854,7 +919,7 @@ def step3c_real2sim(
         # 策略: ICP 给的 (t, s) 比 mask centroid + extent ratio 更准 (3D 校准),
         # 优先用. R 那边 ICP 不一定全局最优 (scene mesh 单视角质量限制),
         # 所以 R candidate 集合 = ICP-yaw + gravity-yaw, 让 Stage 1 自己选 IoU 最高的.
-        init_pose_file = WORK_DIR / f"init_pose_{matched_name}.npz"
+        init_pose_file = paths.init_pose_path(matched_name)
         candidates_list = []
         if init_pose_file.exists():
             ip = np.load(init_pose_file)
@@ -902,6 +967,10 @@ def step3c_real2sim(
 
     config = PipelineConfig()
     config.output_dir = str(output_dir)
+    # per_object/ eval visualizations go into the per-run run_dir, not build/,
+    # so each run keeps a self-contained QA folder next to comparison/ and
+    # gsrl_config.json. Everything else (scene.json etc.) stays in build/.
+    config.viz_output_dir = str(paths.run_dir)
     config.segmentation.text_prompt = scene_prompt
     config.segmentation.expand_mask_iters = 0
     config.segmentation.expand_kernel = 15
@@ -1079,20 +1148,22 @@ def step4_render(
 # ─────────────────────────────────────────────────────────────────────
 
 def main():
+    paths = resolve_paths()
     parser = argparse.ArgumentParser(description="Real2Sim Full Workflow (双环境版)")
     parser.add_argument("--step", required=True,
                         choices=["1", "2", "3a", "3b", "3c", "4"],
                         help="一次只跑一步 (因为不同步骤需要不同 conda env)")
-    parser.add_argument("--scene", type=str, default=str(SCENE_IMAGE),
-                        help="场景图路径")
+    parser.add_argument("--scene", type=str, default=None,
+                        help="场景图路径 (default: pipeline_paths.scene_image)")
     parser.add_argument("--scene-prompt", type=str, default=SCENE_PROMPT,
                         help="场景中物体文字 prompt")
-    parser.add_argument("--mesh-dir", type=str, default=str(VISUALIZATION_DIR),
-                        help="搜索 .glb 的根目录 (step 3c/4)")
     parser.add_argument("--meshes", type=str, nargs="*", default=None,
-                        help="直接指定 mesh: name=path 形式 (step 3c/4)")
-    parser.add_argument("--output", type=str, default=str(OUTPUT_DIR),
-                        help="输出目录")
+                        help="直接指定 mesh: name=path 形式 (step 3c/4); "
+                             "不传则走 pipeline_paths.object_mesh_link.")
+    parser.add_argument("--output", type=str, default=None,
+                        help="step 4 的输出目录 (comparison/ 等). 默认 = pipeline_paths.run_dir. "
+                             "step 3c 的输出 (scene.json / pipeline_results.json / pt3d_intermediate/) "
+                             "固定走 paths.build_prompt_dir, 不受 --output 影响.")
     parser.add_argument("--K", type=float, nargs=4, default=None,
                         metavar=("FX", "FY", "CX", "CY"),
                         help="(step 3b) 已知相机内参 (像素单位)。"
@@ -1104,15 +1175,23 @@ def main():
     setup_logging(args.step)
 
     step = args.step
-    scene_image = args.scene
+    scene_image = args.scene if args.scene else str(paths.scene_image)
     scene_prompt = args.scene_prompt
-    output_dir = Path(args.output)
-    mesh_dir = Path(args.mesh_dir)
+    # step 3c 写 build_prompt_dir (cross-run-deterministic 数据, 不放 run_dir).
+    # step 4  写 run_dir (或 --output 指定的目录), 读 step3c 产物从 build_prompt_dir.
+    output_dir = Path(args.output) if args.output else paths.run_dir
 
     print(f"[main] PROJECT_ROOT = {PROJECT_ROOT}")
     print(f"[main] step         = {step}")
+    print(f"[main] scene_id     = {paths.scene_id}")
+    print(f"[main] prompt_id    = {paths.prompt_id}")
     print(f"[main] scene image  = {scene_image}")
-    print(f"[main] output dir   = {output_dir}")
+    print(f"[main] run dir      = {paths.run_dir}")
+    if step == "3c":
+        print(f"[main] step3c → {paths.build_prompt_dir}  (scene.json / pipeline_results.json)")
+    if step == "4":
+        print(f"[main] step4 reads {paths.pipeline_results_path}")
+        print(f"[main] step4 writes {output_dir}/comparison/")
 
     if step == "1":
         step1_object_masks()
@@ -1142,22 +1221,23 @@ def main():
             glb_paths[name] = Path(path)
     else:
         object_names = [o["name"] for o in OBJECTS]
-        glb_paths = find_glb_files(mesh_dir, object_names)
+        glb_paths = find_glb_files(object_names, paths=paths)
 
     if not glb_paths:
-        print("\n[ERROR] 没有找到任何 .glb。请用 --meshes name=path 指定，")
-        print("        或确认 step 2 已跑完，--mesh-dir 指向 visualization/。")
+        print("\n[ERROR] 没有找到任何 .glb。先跑 step 2 (会自动 symlink 到")
+        print(f"        {paths.build_root}/objects/<obj>__<hash>/mesh.glb)，")
+        print("        或用 --meshes name=path 直接指定。")
         sys.exit(1)
     print(f"[main] mesh paths:")
     for n, p in glb_paths.items():
         print(f"  {n}: {p}")
 
     if step == "3c":
-        step3c_real2sim(scene_image, scene_prompt, glb_paths, output_dir)
+        step3c_real2sim(scene_image, scene_prompt, glb_paths, paths.build_prompt_dir)
         return
 
     if step == "4":
-        results_file = output_dir / "pipeline_results.json"
+        results_file = paths.pipeline_results_path
         if not results_file.exists():
             print(f"[ERROR] {results_file} 不存在，请先跑 --step 3c。")
             sys.exit(2)
@@ -1167,7 +1247,7 @@ def main():
         for obj in results.get("objects", []):
             obj["R"] = torch.tensor(obj["R"])
             obj["t"] = torch.tensor(obj["t"])
-        step4_render(scene_image, results, glb_paths, output_dir / "comparison")
+        step4_render(scene_image, results, glb_paths, paths.comparison_dir)
         return
 
 

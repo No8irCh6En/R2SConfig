@@ -105,4 +105,8 @@ class PipelineConfig:
     depth: DepthConfig = field(default_factory=DepthConfig)
     optimizer: OptimizerConfig = field(default_factory=OptimizerConfig)
     output_dir: str = "outputs/real2sim"
+    # Optional: where to drop per-run QA visualizations (per_object/<name>_eval.png).
+    # If None, falls back to output_dir. In the real2sim driver this is wired to
+    # paths.run_dir so per_object/ lives next to comparison/ and gsrl_config.json.
+    viz_output_dir: Optional[str] = None
     save_intermediate: bool = True

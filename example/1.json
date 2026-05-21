@@ -1,0 +1,291 @@
+{
+    "env": {
+        "env_class": "sim.tasks.mug_tree:MugTreeEnv",
+        "seed": 0,
+        "n_envs": 1,
+        "max_episode_steps": 240,
+        "control_substeps": 2,
+        "include_sim_rgb": false,
+        "include_gs_rgb": false,
+        "sh_degree": 3,
+        "background": [
+            0.0,
+            0.0,
+            0.0
+        ],
+        "rigid_options": {
+            "enable_self_collision": false
+        },
+        "vis_options": {
+            "show_cameras": false
+        },
+        "build_options": {
+            "env_spacing": [
+                2.0,
+                2.0
+            ]
+        },
+        "scene": {
+            "plane_z": 0.0,
+            "plane_friction": 0.8
+        },
+        "robot": {
+            "type": "ufactory_xarm",
+            "use_bimanual": false,
+            "arm_side": "right",
+            "ik_method": "pink",
+            "pink_ik_threshold": 0.002,
+            "pink_ik_failure_mode": "noop",
+            "pos": [
+                0.0,
+                0.0,
+                0.0
+            ],
+            "quat": [
+                1.0,
+                0.0,
+                0.0,
+                0.0
+            ],
+            "home_qpos": [
+                0.0,
+                -0.7853981633974483,
+                0.0,
+                0.7853981633974483,
+                0.0,
+                1.5707963267948966,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0
+            ],
+            "home_eef_pos": [
+                0.32,
+                -0.08,
+                0.24
+            ],
+            "home_eef_quat": [
+                0.0,
+                1.0,
+                0.0,
+                0.0
+            ],
+            "visualize_target": false
+        },
+        "camera": {
+            "with_camera": true,
+            "mode": "ego_wrist",
+            "res": [
+                640,
+                480
+            ],
+            "single_pos": [
+                0.9112,
+                -0.2669,
+                0.3065
+            ],
+            "single_up": [
+                -0.428,
+                0.003,
+                0.9038
+            ],
+            "single_lookat": [
+                0.0074,
+                -0.2728,
+                -0.1215
+            ],
+            "single_fov": 64.81,
+            "single_near": 0.01,
+            "single_far": 10.0,
+            "ego_pos": [
+                0.9112,
+                -0.2669,
+                0.3065
+            ],
+            "ego_up": [
+                -0.428,
+                0.003,
+                0.9038
+            ],
+            "ego_lookat": [
+                0.0074,
+                -0.2728,
+                -0.1215
+            ],
+            "ego_fov": 64.81,
+            "ego_near": 0.01,
+            "ego_far": 10.0,
+            "wrist_fov": 64.5,
+            "wrist_near": 0.01,
+            "wrist_far": 10.0,
+            "wrist_link_name": "link7",
+            "wrist_offset_T": [
+                [
+                    0.0,
+                    0.93253449,
+                    0.36108092,
+                    0.08890143
+                ],
+                [
+                    1.0,
+                    0.0,
+                    0.0,
+                    0.0
+                ],
+                [
+                    0.0,
+                    0.36108092,
+                    -0.93253449,
+                    0.03220073
+                ],
+                [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0
+                ]
+            ]
+        },
+        "control": {
+            "scale_pos": 0.015,
+            "scale_rot": 0.035,
+            "use_gripper_action": true
+        },
+        "observation": {
+            "full_observation": true,
+            "include_relative_observation": true
+        },
+        "mug": {
+            "asset_path": "assets/objects/blue_mug/object_0.glb",
+            "gs_path": "assets/objects/blue_mug/object_0.ply",
+            "spawn_pos": [
+                0.275,
+                -0.238,
+                0.058
+            ],
+            "spawn_quat": [
+                1.0,
+                0.0,
+                0.0,
+                0.0
+            ],
+            "random_xy": 0.0,
+            "random_yaw_deg": 0.0,
+            "handle_offset": [
+                0.0,
+                -0.066,
+                0.030
+            ],
+            "grasp_offset": [
+                0.0,
+                -0.008,
+                0.045
+            ],
+            "entity_kwargs": {
+                "material_kwargs": {
+                    "type": "rigid",
+                    "friction": 1.0,
+                    "rho": 180.0
+                },
+                "morph_kwargs": {
+                    "type": "mesh",
+                    "file": "assets/objects/blue_mug/object_0.glb",
+                    "scale": 0.22,
+                    "fixed": false,
+                    "collision": true,
+                    "decimate": true,
+                    "decimate_face_num": 900,
+                    "convexify": true,
+                    "decompose_object_error_threshold": 0.03,
+                    "recompute_inertia": true
+                }
+            }
+        },
+        "tree": {
+            "asset_path": "assets/objects/mug_tree/object_0.glb",
+            "gs_path": "assets/objects/mug_tree/object_0.ply",
+            "spawn_pos": [
+                0.60,
+                -0.03,
+                0.24
+            ],
+            "spawn_quat": [
+                1.0,
+                0.0,
+                0.0,
+                0.0
+            ],
+            "active_hook_offset": [
+                0.0,
+                -0.12,
+                0.10
+            ],
+            "visualize_hook_target": true,
+            "entity_kwargs": {
+                "material_kwargs": {
+                    "type": "rigid",
+                    "friction": 1.0
+                },
+                "morph_kwargs": {
+                    "type": "mesh",
+                    "file": "assets/objects/mug_tree/object_0.glb",
+                    "scale": 0.38,
+                    "fixed": true,
+                    "collision": true,
+                    "decimate": true,
+                    "decimate_face_num": 1200,
+                    "convexify": true,
+                    "decompose_object_error_threshold": 0.08
+                }
+            }
+        },
+        "reward": {
+            "eef_to_mug_weight": 2.0,
+            "eef_to_mug_std": 0.12,
+            "handle_to_hook_weight": 4.0,
+            "handle_to_hook_std": 0.16,
+            "handle_xy_weight": 3.0,
+            "handle_xy_std": 0.06,
+            "handle_z_weight": 2.0,
+            "handle_z_std": 0.05,
+            "lift_weight": 1.0,
+            "lift_height_target": 0.12,
+            "grasp_weight": 0.2,
+            "action_rate_weight": -0.0001,
+            "success_bonus": 10.0,
+            "success_dist": 0.035,
+            "success_xy_dist": 0.030,
+            "success_z_dist": 0.025,
+            "success_min_lift": 0.08,
+            "success_hold_steps": 4,
+            "terminate_on_success": true
+        },
+        "gs_render": {
+            "enable": true,
+            "include_robot_gs": true,
+            "include_table_gs": true,
+            "workspace_dir": "/scratch3/workspace/junyicao_umass_edu-lc-v1/GSRL-exp/experiments/real2sim/xarm/workspace_0321"
+        },
+        "sim_options": {
+            "dt": 0.01,
+            "substeps": 20,
+            "substeps_local": 1,
+            "requires_grad": false
+        },
+        "mpm_options": {
+            "lower_bound": [
+                -1.0,
+                -1.0,
+                -0.2
+            ],
+            "upper_bound": [
+                1.0,
+                1.0,
+                0.8
+            ]
+        }
+    }
+}
