@@ -73,6 +73,19 @@ from pipeline_paths import (  # noqa: E402
     PipelinePaths,
 )
 
+# Mesh I/O + scene geometry helpers 抽到 real2sim/ 下了 (2026-06 refactor),
+# 这里 re-export 给老调用者 (step3e 还从 full_workflow import find_glb_files).
+from real2sim.mesh_io import (  # noqa: E402, F401
+    find_glb_files,
+    link_object_mesh,
+    load_glb_as_pytorch3d,
+)
+from real2sim.scene_geometry import (  # noqa: E402
+    pt3d_world_camera_from_genesis,
+    yaw_rotation_matrix,
+)
+from real2sim.render_compare import step4_render as _step4_render_impl  # noqa: E402
+
 # SAM3D 入口 (相对 MV-SAM3D/)
 SAM3D_SCRIPT = "run_inference_weighted.py"
 
@@ -502,273 +515,71 @@ def step3b_scene_pointmap(scene_image: str, user_K: Optional[List[float]] = None
 
 
 # ─────────────────────────────────────────────────────────────────────
-# Step 3c: Real2Sim 位姿优化                    (env: sam3d-objects)
+# Step 3c: Real2Sim 位姿优化                    (env: sam3d-objects, world-frame)
 # ─────────────────────────────────────────────────────────────────────
 
-def find_glb_files(object_names: List[str], paths: Optional[PipelinePaths] = None) -> Dict[str, Path]:
-    """Per-object mesh paths under new build layout.
 
-    Order of resolution per name:
-      1. paths.object_mesh_link(name, prompt) — symlink we maintain (preferred)
-      2. Newest result.glb under MV-SAM3D/visualization/<name>__<hash>/<slug>/ — written by step2
-      3. Newest result.glb under MV-SAM3D/visualization/<name>*/.../result.glb — legacy
+def _apply_per_object_env_overrides(entry, matched_name, verts, device, template_path):
+    """把 step3c per-object 的 env-var hook 集中处理 (world-frame mode).
+
+    支持:
+      INIT_XY_<name>=tx,ty        手动指定 init t_x, t_y (world frame, meters);
+                                  顺便 skip closed-form 反推 (否则会被覆盖)
+      INIT_SCALE_<name>=<float>   覆盖 init_scale
+      FREEZE_SCALE_<name>=1       跳 Stage 2 + refine, scale 永远 = init_scale
+      YAW_ONLY[/_<name>]=1        R 退到 1DOF (绕 world +Z yaw), R = R_yaw_z(θ)
+      FLOOR_LOCK[/_<name>]=1      t 锁: t_z = plane_z - s · z_min, 只优化 (t_x, t_y)
     """
-    if paths is None:
-        paths = resolve_paths()
-    name_to_prompt = {o["name"]: o["prompt"] for o in OBJECTS}
-    found: Dict[str, Path] = {}
-    for name in object_names:
-        prompt = name_to_prompt.get(name)
-        # (1) maintained symlink
-        if prompt is not None:
-            link = paths.object_mesh_link(name, prompt)
-            if link.exists():
-                found[name] = link.resolve()
-                continue
-        # (2) post-step2 by hashed input_path basename
-        if prompt is not None:
-            hashed_basename = paths.build_object_dir(name, prompt).name
-            cands = list(VISUALIZATION_DIR.glob(f"{hashed_basename}/**/result.glb"))
-            if cands:
-                found[name] = max(cands, key=lambda p: p.stat().st_mtime)
-                continue
-        # (3) legacy fallback (pre-refactor layout)
-        cands = list(VISUALIZATION_DIR.glob(f"{name}*/**/result.glb"))
-        if cands:
-            found[name] = max(cands, key=lambda p: p.stat().st_mtime)
-            continue
-        print(f"  [WARN] No .glb found for '{name}'.")
-    return found
-
-
-def link_object_mesh(paths: PipelinePaths) -> None:
-    """After step2, populate build/objects/<obj>__<hash>/mesh.glb as a symlink to the
-    latest MV-SAM3D result.glb. Idempotent. Used by fast_start.sh after step2.
-    """
-    for obj in OBJECTS:
-        name = obj["name"]
-        prompt = obj["prompt"]
-        hashed_basename = paths.build_object_dir(name, prompt).name
-        cands = list(VISUALIZATION_DIR.glob(f"{hashed_basename}/**/result.glb"))
-        if not cands:
-            cands = list(VISUALIZATION_DIR.glob(f"{name}*/**/result.glb"))
-        if not cands:
-            print(f"[link_object_mesh] [{name}] no result.glb found under {VISUALIZATION_DIR}")
-            continue
-        latest = max(cands, key=lambda p: p.stat().st_mtime)
-        link = paths.object_mesh_link(name, prompt)
-        link.parent.mkdir(parents=True, exist_ok=True)
-        if link.is_symlink() or link.exists():
-            link.unlink()
-        link.symlink_to(latest)
-        print(f"[link_object_mesh] {name}: {link} → {latest}")
-
-
-def load_glb_as_pytorch3d(path: Path, device, target_triangles: int = 5000):
-    """加载 MV-SAM3D 的 result.glb 并转换到 PyTorch3D 世界系。
-
-    trimesh 默认 y-up (X right, Z out)；PyTorch3D 是 y-up (X **left**, Z **inwards**)。
-    跟 MV-SAM3D 自己 layout_post_optimization_utils.py:113-119 的 get_mesh 一致:
-        verts @ [[1,0,0],[0,0,-1],[0,1,0]].T
-
-    target_triangles: mesh 简化目标三角形数 (silhouette pose opt 不需要 1M faces)。
-        MV-SAM3D 自己也是简化到 5000 (load_and_simplify_mesh)。 None = 不简化。
-    """
-    import torch
-    import numpy as np
-    import trimesh
-
-    scene = trimesh.load(str(path))
-    if isinstance(scene, trimesh.Scene):
-        meshes = [g for g in scene.geometry.values() if isinstance(g, trimesh.Trimesh)]
-        if not meshes:
-            raise ValueError(f"No meshes in {path}")
-        combined = trimesh.util.concatenate(meshes)
-    else:
-        combined = scene
-
-    raw_faces = len(combined.faces)
-    # mesh 简化 (open3d quadric decimation，跟 MV-SAM3D 一样)
-    if target_triangles is not None and raw_faces > target_triangles:
+    xy_key = f"INIT_XY_{matched_name}"
+    if xy_key in os.environ:
+        raw = os.environ[xy_key].strip()
         try:
-            import open3d as o3d
-            m_o3d = o3d.geometry.TriangleMesh()
-            m_o3d.vertices = o3d.utility.Vector3dVector(np.asarray(combined.vertices))
-            m_o3d.triangles = o3d.utility.Vector3iVector(np.asarray(combined.faces))
-            m_o3d.remove_duplicated_vertices()
-            m_o3d.remove_degenerate_triangles()
-            m_o3d.remove_duplicated_triangles()
-            m_o3d.remove_non_manifold_edges()
-            if len(m_o3d.triangles) > target_triangles:
-                m_o3d = m_o3d.simplify_quadric_decimation(target_triangles)
-            verts_np = np.asarray(m_o3d.vertices)
-            faces_np = np.asarray(m_o3d.triangles)
-            print(f"     mesh simplify: {raw_faces} → {len(faces_np)} faces")
+            parts = [float(x) for x in raw.replace(";", ",").split(",") if x.strip()]
+            if len(parts) != 2:
+                raise ValueError(f"expected 2 floats, got {len(parts)}")
         except Exception as e:
-            print(f"     [warn] simplify 失败 ({e})，用原 mesh {raw_faces} faces")
-            verts_np = np.asarray(combined.vertices)
-            faces_np = np.asarray(combined.faces)
-    else:
-        verts_np = np.asarray(combined.vertices)
-        faces_np = np.asarray(combined.faces)
+            print(f"     [warn] {xy_key}='{raw}' 解析失败 ({e}), 忽略")
+        else:
+            tx, ty = parts
+            import torch as _t
+            old = entry["init_t"]
+            entry["init_t"] = _t.tensor(
+                [tx, ty, float(old[2].item())],
+                device=old.device, dtype=old.dtype,
+            )
+            entry["skip_closed_form"] = True
+            print(f"     init_xy 被 {xy_key}=({tx:+.3f},{ty:+.3f}) 覆盖, 跳 closed-form")
 
-    verts = torch.tensor(verts_np, dtype=torch.float32, device=device)
-    faces = torch.tensor(faces_np, dtype=torch.int64, device=device)
+    init_key = f"INIT_SCALE_{matched_name}"
+    if init_key in os.environ:
+        v = float(os.environ[init_key])
+        entry["init_scale"] = v
+        print(f"     init_scale 被 {init_key}={v} 覆盖")
 
-    # z-up → y-up. 跟 MV-SAM3D layout_post_optimization_utils.get_mesh:113-119 完全一致:
-    #   mesh @ [[1,0,0],[0,0,-1],[0,1,0]].T   (注释: "from z-up to y-up")
-    # SAM3D canonical mesh 是 z-up, PyTorch3D world 是 y-up (x-left, z-inwards),
-    # 不做这一步等价于把 mesh 的 "up" (+Z_mesh) 当成 PT3D 的 "into screen" (+Z_world),
-    # 物体就会"躺着"。params.npz["rotation"] 是在 y-up 系下定义的, 所以
-    # init_R = R_sam 直接用即可, 不需要 .T 或相似变换。
-    M_PT3D = torch.tensor(
-        [[1.0, 0.0, 0.0], [0.0, 0.0, -1.0], [0.0, 1.0, 0.0]],
-        dtype=torch.float32, device=device,
-    )
-    verts = verts @ M_PT3D.T
-    vc = None
-    return verts, faces, vc
+    freeze_key = f"FREEZE_SCALE_{matched_name}"
+    if freeze_key in os.environ and os.environ[freeze_key] == "1":
+        entry["freeze_scale"] = True
+        print(f"     freeze_scale 启用 ({freeze_key}=1, scale 钉死在 {entry.get('init_scale', 1.0)})")
 
+    yaw_key = f"YAW_ONLY_{matched_name}"
+    yaw_on = (yaw_key in os.environ and os.environ[yaw_key] == "1") \
+             or os.environ.get("YAW_ONLY", "0") == "1"
+    if yaw_on:
+        entry["yaw_only"] = True
+        print(f"     yaw_only 启用 (R = R_yaw_z(θ), 绕 world +Z 转, 1 DOF)")
 
-def fit_dominant_plane_ransac(
-    pointmap_np,
-    n_iters: int = 400,
-    dist_thresh: float = 0.02,
-    rng_seed: int = 0,
-):
-    """RANSAC 拟合 scene_pointmap 中的最大平面 (一般就是桌面).
-
-    pointmap_np: (H, W, 3) numpy, PyTorch3D 系下的 (X_left, Y_up, Z_forward).
-    返回 (normal[3], inlier_ratio) 或 None.
-    """
-    import numpy as np
-    H, W, _ = pointmap_np.shape
-    pts = pointmap_np.reshape(-1, 3)
-    valid = np.abs(pts[:, 2]) > 1e-3
-    pts = pts[valid]
-    if len(pts) < 500:
-        return None
-
-    rng = np.random.default_rng(rng_seed)
-    best_inliers = 0
-    best_normal = None
-    for _ in range(n_iters):
-        idx = rng.integers(0, len(pts), size=3)
-        p1, p2, p3 = pts[idx[0]], pts[idx[1]], pts[idx[2]]
-        n = np.cross(p2 - p1, p3 - p1)
-        nn = np.linalg.norm(n)
-        if nn < 1e-6:
-            continue
-        n = n / nn
-        d = -float(n @ p1)
-        dist = np.abs(pts @ n + d)
-        n_inl = int((dist < dist_thresh).sum())
-        if n_inl > best_inliers:
-            best_inliers = n_inl
-            best_normal = n
-            best_d = d
-
-    if best_normal is None:
-        return None
-    return best_normal, best_inliers / len(pts)
-
-
-def build_scene_R_from_gravity(gravity_dir, device):
-    """从 scene-frame 下的重力方向构造 R_scene (gravity-aligned world → scene-camera frame).
-
-    PyTorch3D row-vector 约定: X_scene = X_world @ R.
-    R 的行 = world 基向量在 scene 系下的表达:
-        R[0,:] = world +X 在 scene 系
-        R[1,:] = world +Y 在 scene 系 = anti-gravity
-        R[2,:] = world +Z 在 scene 系
-    """
-    import torch
-    g = gravity_dir / (gravity_dir.norm() + 1e-8)
-    anti_g = -g  # world +Y in scene frame
-
-    # 拿 scene +Z 作为 forward 参考, 投到水平面上得到 world +Z 在 scene 系的表达
-    z_ref = torch.tensor([0.0, 0.0, 1.0], device=device, dtype=torch.float32)
-    world_z = z_ref - (z_ref @ anti_g) * anti_g
-    nz = world_z.norm()
-    if nz < 0.1:
-        # +Z 几乎和重力同向, 改用 +X 作 fallback
-        x_ref = torch.tensor([1.0, 0.0, 0.0], device=device, dtype=torch.float32)
-        world_z = x_ref - (x_ref @ anti_g) * anti_g
-        nz = world_z.norm()
-    world_z = world_z / (nz + 1e-8)
-
-    # world +X = anti_g × world +Z (右手系, y-up)
-    world_x = torch.linalg.cross(anti_g, world_z)
-    world_x = world_x / (world_x.norm() + 1e-8)
-
-    R = torch.stack([world_x, anti_g, world_z], dim=0)  # (3, 3) rows
-    return R
-
-
-def yaw_rotation_matrix(theta_rad: float, device):
-    """绕 y-up 世界的 +Y 轴转 theta. PyTorch3D row-vector 约定."""
-    import math
-    import torch
-    c, s = math.cos(theta_rad), math.sin(theta_rad)
-    return torch.tensor(
-        [[c, 0.0, s],
-         [0.0, 1.0, 0.0],
-         [-s, 0.0, c]],
-        device=device, dtype=torch.float32,
-    )
-
-
-def compute_align_long_axis_rotation(verts, device):
-    """PCA 找 mesh 最长主轴, 构造 R 把这个轴打到 world +Y.
-
-    PyTorch3D row-vector 约定: long_axis @ R = (0, 1, 0).
-    返回 R (3x3) 使得 mesh canonical 顶点 v 经过 v @ R 之后, 长轴方向沿 +Y.
-    """
-    import torch
-    v = verts - verts.mean(dim=0, keepdim=True)
-    cov = (v.T @ v) / max(len(v) - 1, 1)
-    # eigh 升序返回 → 最后一个特征向量是最大方差方向
-    eigvals, eigvecs = torch.linalg.eigh(cov)
-    long_axis = eigvecs[:, -1]  # (3,) unit vector
-
-    # PCA 不给方向, 用 skewness 决定正负: 一般物体 base 重 (mug_tree 圆盘底,
-    # red_mug 杯底) → "重的那一端朝下", 即 long_axis 该指向轻的那端 (skew > 0).
-    proj = v @ long_axis  # (N,)
-    skew = float((proj ** 3).mean())
-    if skew < 0:
-        long_axis = -long_axis
-
-    target = torch.tensor([0.0, 1.0, 0.0], device=device, dtype=long_axis.dtype)
-    d = float((long_axis * target).sum())
-    # 已经 ≈ 平行 → 返回 I
-    if d > 0.9999:
-        return torch.eye(3, device=device, dtype=long_axis.dtype)
-    # ≈ 反平行 → 绕任意垂直轴翻 180° (用 +X 轴)
-    if d < -0.9999:
-        return torch.tensor(
-            [[1.0, 0.0, 0.0],
-             [0.0, -1.0, 0.0],
-             [0.0, 0.0, -1.0]],
-            device=device, dtype=long_axis.dtype,
-        )
-
-    # 一般情况: 用 Rodrigues 构造 column-vector 旋转, 然后取 .T 给 row-vector 用.
-    # column-vec: R_col @ long_axis = target  (axis = long × target, angle = acos(d))
-    axis = torch.linalg.cross(long_axis, target)
-    axis = axis / (axis.norm() + 1e-8)
-    import math
-    angle = math.acos(max(-1.0, min(1.0, d)))
-    K = torch.tensor(
-        [[0.0, -axis[2].item(), axis[1].item()],
-         [axis[2].item(), 0.0, -axis[0].item()],
-         [-axis[1].item(), axis[0].item(), 0.0]],
-        device=device, dtype=long_axis.dtype,
-    )
-    R_col = (torch.eye(3, device=device, dtype=long_axis.dtype)
-             + math.sin(angle) * K
-             + (1.0 - math.cos(angle)) * (K @ K))
-    R_row = R_col.T.contiguous()  # row-vector 约定
-    return R_row
+    floor_key = f"FLOOR_LOCK_{matched_name}"
+    floor_on = (floor_key in os.environ and os.environ[floor_key] == "1") \
+               or os.environ.get("FLOOR_LOCK", "0") == "1"
+    if floor_on and yaw_on:
+        # mesh-after-M_LOAD 的 up 是 +Z, mug 底是 mesh 最低 +Z 点
+        z_min = float(verts[:, 2].min().item())
+        entry["floor_constraint"] = {
+            "y_min": z_min,    # 字段名保留历史, 实际是 mesh +Z 方向最低点
+        }
+        print(f"     floor_lock 启用 (t_z = plane_z - s · {z_min:.4f}, 只优化 t_x, t_y)")
+    elif floor_on and not yaw_on:
+        print(f"     [warn] FLOOR_LOCK 要求 YAW_ONLY=1, 跳过")
 
 
 def step3c_real2sim(
@@ -808,34 +619,28 @@ def step3c_real2sim(
     else:
         print(f"[step3c] {pointmap_file} 不存在，回退 DepthAnything (Z 仍为 2.0 估计)")
 
-    # ── 从 pointmap 估场景重力, 构造 R_scene (gravity-world → scene-camera) ──
-    # 假设场景里有面积最大的水平面 (桌面 / 棋盘格), 法向 = anti-gravity.
-    R_scene = None
-    if metric_pointmap is not None:
-        pm_np = metric_pointmap.cpu().numpy()
-        plane = fit_dominant_plane_ransac(pm_np, n_iters=400, dist_thresh=0.02)
-        if plane is not None:
-            normal, ratio = plane
-            # 选取与 +Y 正向夹角更小的那一侧 (PyTorch3D world +Y 是 up = anti-gravity)
-            if normal[1] < 0:
-                normal = -normal
-            gravity_dir = torch.tensor(-normal, dtype=torch.float32, device=device)
-            R_scene = build_scene_R_from_gravity(gravity_dir, device)
-            print(f"[step3c] gravity-fit OK: plane normal={normal.round(3).tolist()}  "
-                  f"inlier_ratio={ratio:.2f}")
-        else:
-            print("[step3c] gravity-fit 失败 (点太少), R_scene = I")
-    if R_scene is None:
-        R_scene = torch.eye(3, device=device)
+    # ── World-frame setup ───────────────────────────────────────────────
+    # 整个优化在 Genesis world (z-up) 里跑, 相机用 single_pos / single_lookat / single_up 摆好.
+    # R, t 直接是 mesh→Genesis-world, step5 不需要 compose_pose 转换. 跟
+    # scripts/render_pt3d_check.py 完全一致的几何处理. K 也从 single_fov 反推.
+    template_path = PROJECT_ROOT / "example" / "1.json"
+    H_scene, W_scene = bundle["masks"].shape[-2:]
+    world_camera_params = pt3d_world_camera_from_genesis(template_path, H_scene, W_scene, device)
+    if world_camera_params is None:
+        print(f"[step3c] [fatal] 读不到 {template_path}, 退出")
+        sys.exit(2)
+    print(f"[step3c] world frame: cam_pos={world_camera_params['cam_pos'].tolist()}, "
+          f"plane_z={world_camera_params['plane_z']}, "
+          f"fx={world_camera_params['fx']:.1f}, image={W_scene}x{H_scene}")
 
-    # MoGe 估出来的内参（step3b 保存）。没有就走默认 60° FoV。
-    K_file = paths.scene_intrinsics_path
-    K = None
-    if K_file.exists():
-        K = torch.from_numpy(np.load(K_file)).float()
-        print(f"[step3c] loaded scene_intrinsics.npy fx={K[0,0]:.1f} fy={K[1,1]:.1f}")
-    else:
-        print(f"[step3c] {K_file} 不存在；pipeline 会用默认 60° FoV")
+    # K 单独构造一份 (pipeline.py 还接受 K 当参数, 但优化器 in world-frame mode 实际从
+    # world_camera_params 取). 给它填一个跟 world_camera_params 同步的, 避免老 code path 报错.
+    wcp = world_camera_params
+    K = torch.tensor(
+        [[wcp["fx"], 0, wcp["cx"]],
+         [0, wcp["fy"], wcp["cy"]],
+         [0, 0, 1]], dtype=torch.float32,
+    )
 
     inpaint_file = paths.inpainted_image_path
     precomputed_inpainted = None
@@ -858,21 +663,43 @@ def step3c_real2sim(
 
     mesh_data_list = []
     precomputed_masks = []
+    # label→mesh 匹配: 选 best-score 而不是 first-match.
+    # 之前 first-match 在 prompt 嵌套时翻车: slug='black_straight_mug_tree' 撞到
+    # blue_mug 的 prompt='mug' (子串成立), 直接 break, tree 的 mask 错配到 blue_mug.
+    # 现在排名:  prompt_slug 完全相等 (4) > name 完全相等 (3) > name 子串 (2) > prompt 子串 (1)
+    # 同级再比 match 长度 (越长越特异), 保证 tree label 只能赢 black_mug_tree.
+    def _match_rank(slug, name_l, prompt_slug):
+        if prompt_slug and prompt_slug == slug:
+            return (4, len(prompt_slug))
+        if name_l == slug:
+            return (3, len(name_l))
+        best = (0, 0)
+        if slug in name_l:
+            best = max(best, (2, len(slug)))
+        if name_l in slug:
+            best = max(best, (2, len(name_l)))
+        if prompt_slug:
+            if slug in prompt_slug:
+                best = max(best, (1, len(slug)))
+            if prompt_slug in slug:
+                best = max(best, (1, len(prompt_slug)))
+        return best
+
     for label, mask in zip(labels, masks):
         slug = sanitize_filename(label).lower()
-        matched_name = None
+        best_name = None
+        best_rank = (0, 0)
         for name, _ in mesh_paths.items():
             name_l = name.lower()
             prompt_slug = name_to_prompt_slug.get(name, "")
-            if (
-                slug in name_l or name_l in slug
-                or (prompt_slug and (slug in prompt_slug or prompt_slug in slug))
-            ):
-                matched_name = name
-                break
-        if matched_name is None:
+            rank = _match_rank(slug, name_l, prompt_slug)
+            if rank > best_rank:
+                best_rank = rank
+                best_name = name
+        if best_name is None:
             print(f"  [warn] label='{label}' (slug='{slug}') 没找到匹配的 mesh，跳过")
             continue
+        matched_name = best_name
 
         glb_path = mesh_paths[matched_name]
         print(f"  '{label}' -> mesh {matched_name} <- {glb_path}")
@@ -881,83 +708,34 @@ def step3c_real2sim(
         if vc is not None:
             entry["vertex_colors"] = vc
 
-        # 从 params.npz 取 rotation 当 init_R prior（candidate 0）。
-        # 经 debug_sam3d_prior.py 验证 (2026-05-17):
-        #   - rotation:    ✅ 可用 → 给 init_R, red mug 不优化就 IoU 0.63
-        #   - translation: ❌ 不可用（SAM3D 跑的是 crop 不是 scene，坐标不对得上）
-        #   - scale:       ❌ 不可用（SAM3D 是 SSI-normalized scale，
-        #                     乘 pointmap_scale 后也只能到 ~1.5m，实际 mug 0.17m，差 ~9×）
-        # → 让 mask + depth 自动估 init_t 和 init_scale。
-        #
-        # convention: 直接用 R_sam (不转置).
-        # MV-SAM3D 自己 (layout_post_optimization_utils.py:113-119) 的流程是
-        #   y-up_verts = z-up_verts @ M_PT3D.T   (mesh 转 y-up)
-        #   world_verts = tfm_ori.transform_points(y-up_verts)   (其中 rotation=R_sam)
-        # 也就是说 R_sam 是在 y-up 系下定义的。我们 load_glb_as_pytorch3d 已经把 mesh
-        # 做了同样的 z-up→y-up, 所以这里 R_sam 直接当 PyTorch3D camera R 即可,
-        # 不再做 .T 也不做相似变换。
-        # (历史: 2026-05-17 误判 "mesh 已经是 y-up", 把 M_PT3D 撤掉同时 R 不转置,
-        # 结果两个错误抵消一半 → 红 mug 蒙到 IoU=0.69, mug_tree 0.08 暴露问题。)
-        params_npz = glb_path.parent / "params.npz"
-        R_sam = None
-        if params_npz.exists():
-            try:
-                from pytorch3d.transforms import quaternion_to_matrix
-                p = np.load(params_npz)
-                quat = np.asarray(p["rotation"]).flatten()  # (4,) wxyz
-                R_sam = quaternion_to_matrix(
-                    torch.from_numpy(quat).float().to(device)
-                ).contiguous()  # (3,3)
-                entry["init_R"] = R_sam
-                s_legacy = float(np.asarray(p["scale"]).mean())
-                print(f"     init_R from params.npz quat=[{quat[0]:.3f}, {quat[1]:.3f}, "
-                      f"{quat[2]:.3f}, {quat[3]:.3f}]  (sam_scale={s_legacy:.3f} 仅打印不使用)")
-            except Exception as e:
-                print(f"     [warn] params.npz 读不出来: {e}")
-
-        # ── 构造 init pose ──────────────────────────────────────────────
-        # 策略: ICP 给的 (t, s) 比 mask centroid + extent ratio 更准 (3D 校准),
-        # 优先用. R 那边 ICP 不一定全局最优 (scene mesh 单视角质量限制),
-        # 所以 R candidate 集合 = ICP-yaw + gravity-yaw, 让 Stage 1 自己选 IoU 最高的.
-        init_pose_file = paths.init_pose_path(matched_name)
+        # ── Init pose (world-frame) ─────────────────────────────────────
+        # init_R = I, 8 个绕 world +Z 的 yaw candidates 覆盖 360°. optimizer 选 IoU 最好的.
+        # init_t = cam_lookat 的 xy + plane_z + 微调 (floor_lock 会重算 t_z).
+        # 不再用 step3e 的 ICP init (那是 PT3D-cam frame 的, 跟 world frame 不对应).
+        entry["world_camera_params"] = world_camera_params
+        entry["init_R"] = torch.eye(3, device=device)
         candidates_list = []
-        if init_pose_file.exists():
-            ip = np.load(init_pose_file)
-            R_icp = torch.from_numpy(ip["R"]).float().to(device)
-            t_icp = torch.from_numpy(ip["t"]).float().to(device)
-            s_icp = float(ip["scale"])
-            # 用 ICP 的 t, s 当 init (它们来自 3D pointmap, 比 2D mask 估算可靠)
-            entry["init_R"] = R_icp
-            entry["init_t"] = t_icp
-            entry["init_scale"] = s_icp
-            # ICP-based yaw refinement: 8 个 yaw (45° 步长) + ICP 原 R, 共 9 个
-            for d_deg in [0, 45, 90, 135, 180, 225, 270, 315]:
-                theta = 2.0 * 3.141592653589793 * d_deg / 360.0
-                R_yaw = yaw_rotation_matrix(theta, device)
-                candidates_list.append(R_icp @ R_yaw)
-            icp_info = (f"ICP-yaw (9, init from {init_pose_file.name}: "
-                        f"s={s_icp:.4f}, fit={float(ip['icp_fitness']):.3f}, "
-                        f"rmse={float(ip['icp_rmse']):.4f}m)")
-        else:
-            icp_info = "no ICP file"
-
-        # Gravity-yaw candidates: R_sam @ Ry(k·45°) @ R_scene (旧路径)
-        if R_sam is not None:
-            for k in range(8):
-                theta = 2.0 * 3.141592653589793 * k / 8.0
-                R_yaw = yaw_rotation_matrix(theta, device)
-                candidates_list.append(R_sam @ R_yaw @ R_scene)
-            grav_info = "+ R_sam@Ry@R_scene (8)"
-        else:
-            for k in range(8):
-                theta = 2.0 * 3.141592653589793 * k / 8.0
-                R_yaw = yaw_rotation_matrix(theta, device)
-                candidates_list.append(R_yaw @ R_scene)
-            grav_info = "+ Ry@R_scene (8)"
-
+        for k in range(8):
+            theta = 2.0 * 3.141592653589793 * k / 8.0
+            candidates_list.append(yaw_rotation_matrix(theta, device))
         entry["init_R_candidates"] = candidates_list
-        print(f"     {len(candidates_list)} init_R candidates: {icp_info} {grav_info}")
 
+        import json as _json
+        tpl_cfg = _json.loads(template_path.read_text())
+        lookat = tpl_cfg["env"]["camera"]["single_lookat"]
+        plane_z_val = world_camera_params["plane_z"]
+        entry["init_t"] = torch.tensor(
+            [float(lookat[0]), float(lookat[1]), float(plane_z_val) + 0.05],
+            device=device, dtype=torch.float32,
+        )
+        # init_scale 这里不设 (走 OptimizerConfig 默认 1.0); 想 override 用 INIT_SCALE_<name> env
+        print(f"     init_R = I, init_t = {entry['init_t'].tolist()}, "
+              f"8 个绕 world +Z yaw candidates")
+
+        # debug viz dir: optimizer 会在这里存 {name}_init.png (init pose render)
+        entry["debug_save_dir"] = str(paths.run_dir / "per_object")
+
+        _apply_per_object_env_overrides(entry, matched_name, verts, device, template_path)
         mesh_data_list.append(entry)
         precomputed_masks.append({"mask": mask, "label": label})
 
@@ -977,6 +755,34 @@ def step3c_real2sim(
     config.optimizer.stages = 3
     config.optimizer.iters_per_stage = 300
     config.save_intermediate = True
+
+    # 测试钩子: FREEZE_SCALE=1 → optimizer 跳过 Stage 2 + refine, scale 永远等于 init_scale.
+    # 配合 INIT_SCALE_<name>=<v> 一起用, 比如固定 mug_1_tripo @ scale=1.2 求 R/t.
+    if os.environ.get("FREEZE_SCALE", "0") == "1":
+        config.optimizer.freeze_scale = True
+        print(f"[step3c] FREEZE_SCALE=1 → optimizer 跳过 Stage 2, scale 钉死在 init_scale")
+
+    # STAGE1_LEARN_SCALE=1: Stage 1 把 scale 一起学 (Adam), 跳过 Stage 2 area_ratio.
+    # 需要 yaw_only + floor_lock 一起开. 用 IoU loss 直接管 scale, 比 area_ratio 鲁棒.
+    if os.environ.get("STAGE1_LEARN_SCALE", "0") == "1":
+        config.optimizer.learn_scale = True
+        print(f"[step3c] STAGE1_LEARN_SCALE=1 → Stage 1 学 s (Adam, exp 参数化), "
+              f"跳过 Stage 2 area_ratio")
+
+    # STAGE1_TXY_GRID=N (推荐 N=5): Stage 1 在 init_t.xy 周围撒 N×N grid 起点,
+    # 每个起点 × 8 yaw 都跑一遍, 选 IoU 最高的当 winner. 用来逃 silhouette loss
+    # 的多 basin (非凸物体易卡 wrong basin, 单 init 救不回来).
+    # 时间代价 × N². N=5 → 25 grid × 8 yaw = 200 candidates, ~2 min/object.
+    # STAGE1_TXY_GRID_RADIUS=<m> 控制 grid 半径, 默认 0.5m.
+    grid_n = int(os.environ.get("STAGE1_TXY_GRID", "1"))
+    if grid_n > 1:
+        config.optimizer.stage1_txy_grid = grid_n
+        config.optimizer.stage1_txy_grid_radius = float(
+            os.environ.get("STAGE1_TXY_GRID_RADIUS", "0.5")
+        )
+        print(f"[step3c] STAGE1_TXY_GRID={grid_n} → Stage 1 撒 {grid_n}×{grid_n}={grid_n*grid_n} "
+              f"(tx,ty) 起点, 半径 ±{config.optimizer.stage1_txy_grid_radius:.2f}m. "
+              f"总 cand = 8 yaw × {grid_n*grid_n} = {8*grid_n*grid_n}")
 
     # Stage 1 iter 数放大 (做调试用). 默认 1.0 = 80 / 60 iter.
     # 跑 STAGE1_ITER_SCALE=10 bash fast_start.sh 3c → 800 / 600 iter.
@@ -1015,132 +821,15 @@ def step3c_real2sim(
 
 # ─────────────────────────────────────────────────────────────────────
 # Step 4: 渲染对比                              (env: sam3d-objects)
+# 实现在 real2sim/render_compare.py, 这里只是 banner + env check 的 wrapper.
 # ─────────────────────────────────────────────────────────────────────
 
-def step4_render(
-    scene_image: str,
-    results: Dict,
-    mesh_paths: Dict[str, Path],
-    output_dir: Path,
-):
+def step4_render(scene_image: str, results: Dict, mesh_paths: Dict[str, Path], output_dir: Path):
     banner("4", "sam3d-objects", "Rendering & comparison")
     assert_env("sam3d-objects", ["torch", "pytorch3d", "trimesh"])
-
-    import numpy as np
-    import torch
-    from PIL import Image
-    from pytorch3d.renderer import (
-        BlendParams, MeshRasterizer, MeshRenderer, PerspectiveCameras,
-        PointLights, RasterizationSettings, SoftPhongShader, TexturesVertex,
-    )
-    from pytorch3d.structures import Meshes
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    orig = Image.open(scene_image).convert("RGB")
-    W, H = orig.size
-    orig_tensor = torch.from_numpy(np.array(orig)).float().to(device) / 255.0
-
-    cam = results.get("camera", {})
-    fx = cam.get("fx", W)
-    fy = cam.get("fy", H)
-    cx = cam.get("cx", W / 2)
-    cy = cam.get("cy", H / 2)
-
-    all_verts, all_faces, all_colors = [], [], []
-    face_offset = 0
-    for obj in results.get("objects", []):
-        name = obj["name"]
-        R = obj["R"]
-        t = obj["t"]
-        s = obj["scale"]
-        if isinstance(R, list):
-            R = torch.tensor(R)
-        if isinstance(t, list):
-            t = torch.tensor(t)
-        if isinstance(R, np.ndarray):
-            R = torch.from_numpy(R).float()
-        if isinstance(t, np.ndarray):
-            t = torch.from_numpy(t).float()
-
-        glb_path = mesh_paths.get(name)
-        if glb_path is None:
-            print(f"  [WARN] No mesh for {name}, skipping")
-            continue
-        verts, faces, vc = load_glb_as_pytorch3d(glb_path, device)
-
-        # PyTorch3D row-vector 约定 (跟 step3c 优化器一致):
-        # cameras.transform_points(X_world) = X_world @ R + T
-        # 这里 camera R = I, T = 0, 所以我们直接把 mesh 摆到 world 等价于:
-        # X_world = X_canonical @ R_opt + t_opt
-        # 之前写的是 R.T (= (R @ V.T).T = V @ R.T), 跟 step3c 不一致, 渲出来位姿差一个 transpose,
-        # 导致 step4 comparison.png 跟 per_object eval 不一样。
-        verts = verts * s
-        verts = verts @ R.to(device) + t.to(device)
-
-        all_verts.append(verts)
-        all_faces.append(faces + face_offset)
-        face_offset += len(verts)
-
-        if vc is not None:
-            all_colors.append(vc)
-        else:
-            color = torch.rand(3, device=device)[None].expand(len(verts), 3)
-            all_colors.append(color)
-
-    if not all_verts:
-        print("[step4] no meshes to render")
-        return
-
-    big_verts = torch.cat(all_verts, dim=0)
-    big_faces = torch.cat(all_faces, dim=0)
-    big_colors = torch.cat(all_colors, dim=0)
-    mesh = Meshes(
-        verts=[big_verts],
-        faces=[big_faces],
-        textures=TexturesVertex(verts_features=big_colors[None]),
-    )
-
-    blend = BlendParams(sigma=1e-4, gamma=1e-4, background_color=(0.0, 0.0, 0.0))
-    raster_settings = RasterizationSettings(
-        image_size=(H, W), blur_radius=0.0, faces_per_pixel=1,
-        bin_size=0, max_faces_per_bin=200_000,
-    )
-
-    R_cam = torch.eye(3, device=device)
-    T_cam = torch.zeros(3, device=device)
-    cameras = PerspectiveCameras(
-        focal_length=((fx, fy),),
-        principal_point=((cx, cy),),
-        image_size=((H, W),),
-        R=R_cam[None], T=T_cam[None],
-        device=device, in_ndc=False,
-    )
-    lights = PointLights(device=device, location=[[0.0, 0.0, 0.0]])
-    renderer = MeshRenderer(
-        rasterizer=MeshRasterizer(raster_settings=raster_settings),
-        shader=SoftPhongShader(device=device, blend_params=blend, lights=lights),
-    )
-
-    rendered = renderer(mesh, cameras=cameras)
-    render_img = rendered[0, ..., :3].clamp(0, 1)
-    alpha = (rendered[0, ..., 3] > 0.01).float().unsqueeze(-1)
-    overlay = orig_tensor * (1 - alpha * 0.5) + render_img * (alpha * 0.5)
-    sil = alpha.expand(-1, -1, 3)
-    side = torch.cat([orig_tensor, sil, overlay], dim=1)
-
-    def save_tensor(t, name):
-        arr = (t.clamp(0, 1).cpu().numpy() * 255).astype(np.uint8)
-        Image.fromarray(arr).save(output_dir / name)
-
-    save_tensor(overlay, "overlay.png")
-    save_tensor(side, "comparison.png")
-    save_tensor(render_img, "render.png")
-    print(f"[step4] saved to {output_dir}/")
-    print(f"  comparison.png  — 原图 | 轮廓 | 叠加")
-    print(f"  overlay.png     — 原图+mesh 半透明叠加")
-    print(f"  render.png      — 纯渲染")
+    template_path = PROJECT_ROOT / "example" / "1.json"
+    _step4_render_impl(scene_image, results, mesh_paths, output_dir,
+                       template_path=template_path if template_path.exists() else None)
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -1209,8 +898,9 @@ def main():
         step3b_scene_pointmap(scene_image, user_K=args.K)
         return
 
+    object_names = [o["name"] for o in OBJECTS]
+    glb_paths = find_glb_files(object_names, paths=paths)
     if args.meshes:
-        glb_paths = {}
         for item in args.meshes:
             if "=" in item:
                 name, path = item.split("=", 1)
@@ -1219,9 +909,6 @@ def main():
                 name = p.parent.name or p.stem
                 path = item
             glb_paths[name] = Path(path)
-    else:
-        object_names = [o["name"] for o in OBJECTS]
-        glb_paths = find_glb_files(object_names, paths=paths)
 
     if not glb_paths:
         print("\n[ERROR] 没有找到任何 .glb。先跑 step 2 (会自动 symlink 到")
@@ -1233,7 +920,9 @@ def main():
         print(f"  {n}: {p}")
 
     if step == "3c":
-        step3c_real2sim(scene_image, scene_prompt, glb_paths, paths.build_prompt_dir)
+        # 默认写 build_prompt_dir (跨 run cacheable); --output 给测试场景一个 escape hatch.
+        step3c_out = Path(args.output) if args.output else paths.build_prompt_dir
+        step3c_real2sim(scene_image, scene_prompt, glb_paths, step3c_out)
         return
 
     if step == "4":

@@ -56,6 +56,16 @@ class OptimizerConfig:
     lr_pose: float = 0.01
     lr_scale: float = 0.005
     lr_camera: float = 0.001
+    # 若 True, optimize() 跳过 Stage 2 (analytical scale) + Stage 1 refine,
+    # s_final 永远等于 init_scale. 用来 ablation / 已知真实 scale 的固定测试.
+    freeze_scale: bool = False
+
+    # 若 True, R 退化为 1DOF (绕 R_scene 给定的 gravity 轴 yaw), roll/pitch 锁死 0.
+    # 适合"杯子平放在桌面"这种 upright 场景: 缩小搜索空间, 320x240 低分辨率 silhouette
+    # 容易让 R 收敛到错误的倾斜局部极值. 需要 optimizer.optimize 时同时传 R_scene
+    # (gravity-world → scene-camera rotation, step3c 在 pipeline.py 算的);
+    # 不传则退回相机 +Y 当 up (相机倾斜时不准确).
+    yaw_only: bool = False
 
     # Loss weights per stage: [mask, depth, rgb]
     loss_weights: List[List[float]] = field(default_factory=lambda: [
@@ -83,16 +93,19 @@ class OptimizerConfig:
     stage1_sigma_fine:   float = 1e-4  # L1 用 (384x384, refine)
     stage1_faces_per_px: int   = 50    # 必须 >> 1, 不然 SoftSilhouette 退化成 hard
 
-    # 3D Chamfer loss (P_tgt → V_pred 单向). pointmap (mask 内) 给出物体可见表面的
-    # 真实 3D 位置, mesh-after-pose 跟它对齐. 解决 silhouette 对绕长轴 yaw 不敏感
-    # 的问题 (例如 mug_tree 的挂钩在 3D 凸出方向上很有信息, 2D 投影分不清).
-    stage1_chamfer_weight:    float = 0.5    # chamfer loss 权重 (相对 IoU=1.0)
-    stage1_chamfer_max_pts:   int   = 1500   # 从 mask 内 pointmap 采几个点
-    stage1_chamfer_max_verts: int   = 3000   # 从 mesh verts 采几个 (对距离矩阵的 M)
-    stage1_chamfer_in_coarse: bool  = False  # L0 (128x128) 也加 chamfer? 默认只 L1
-    # candidate 综合排序: score = IoU - w · chamfer_norm
-    # chamfer_norm = chamfer_dist / (mesh_extent * s). 单位无量纲.
-    selection_chamfer_weight: float = 0.5    # 排序时 chamfer 相对 IoU 的权重
+    # 若 True (+ yaw_only + floor_lock), Stage 1 里 s 也是可学参数, 用 IoU loss 直接优化.
+    # tz 仍由 floor_lock 自动算 (= plane_z - s·z_min). 开了就跳过 Stage 2 area_ratio.
+    # 比 area_ratio 鲁棒: IoU 形状敏感, mesh 撑出 mask 边界会被惩罚.
+    learn_scale:        bool   = False
+    stage1_lr_scale:    float  = 5e-3  # s_log 的 Adam lr (exp 参数化, 量纲 ≈ 0.1-0.5)
+
+    # Stage 1 (tx, ty) 多起点 grid search. 1 = 关 (老行为, 8 yaw × 1 init_t).
+    # >1 = 在 init_t 周围 NxN grid 撒点, 每个点都跑一遍 (yaw × N×N candidates).
+    # 用来逃出 silhouette loss 的局部极值 — 非凸物体 (tree 这种) 容易卡 wrong basin.
+    # 总 candidates = 8 yaw × N² grid, 时间 × N². 推荐 N=5 (25 grid × 8 yaw = 200 cand).
+    stage1_txy_grid:        int   = 1
+    # grid 半径 (米). 在 init_t.xy ± stage1_txy_grid_radius 之间均匀撒 N 个点.
+    stage1_txy_grid_radius: float = 0.5
 
 
 @dataclass

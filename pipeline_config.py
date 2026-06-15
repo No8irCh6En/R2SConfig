@@ -24,15 +24,15 @@ from typing import Dict, List
 _OBJECTS_BY_SCENE: Dict[str, List[Dict[str, str]]] = {
     "red_with_mug_tree": [
         {"name": "red_mug",        "prompt": "mug",                   "slot": "mug"},
-        {"name": "black_mug_tree", "prompt": "black straight object", "slot": "tree"},
+        {"name": "black_mug_tree_new", "prompt": "black straight mug tree",   "slot": "tree"},
     ],
     "blue_with_mug_tree": [
         {"name": "blue_mug",       "prompt": "mug",                   "slot": "mug"},
-        {"name": "black_mug_tree", "prompt": "black straight object", "slot": "tree"},
+        {"name": "black_mug_tree_new", "prompt": "black straight mug tree",   "slot": "tree"},
     ],
     "white_with_mug_tree": [
         {"name": "white_mug",      "prompt": "mug",                   "slot": "mug"},
-        {"name": "black_mug_tree", "prompt": "black straight object", "slot": "tree"},
+        {"name": "black_mug_tree_new", "prompt": "black straight mug tree",   "slot": "tree"},  
     ],
 }
 
@@ -50,7 +50,7 @@ OBJECTS: List[Dict[str, str]] = _OBJECTS_BY_SCENE[_resolve_scene_for_objects()]
 
 # SAM3 text prompt for the whole scene (step3a/3d). Keep aligned with the
 # per-object prompts so the labels returned by SAM3 can be matched to meshes.
-SCENE_PROMPT = "mug. black straight object."
+SCENE_PROMPT = "mug. black straight mug tree."
 
 # SAM3 mask confidence threshold (step1). Different value → different masks →
 # different downstream meshes/poses → different build dir.

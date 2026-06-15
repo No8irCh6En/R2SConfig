@@ -257,19 +257,39 @@ def main():
 
     name_to_prompt_slug = {obj["name"]: sanitize_filename(obj["prompt"]).lower() for obj in OBJECTS}
 
+    # 跟 step3c 用同一个 best-score 匹配 (prompt_slug 完全相等 > name 完全相等 > 子串).
+    # 之前 first-match 会让 sub='black_straight_mug_tree' 撞 blue_mug 的 prompt='mug',
+    # 结果 init_pose_blue_mug.npz 实际是用 tree 的 scene-sam3d mesh 算的 ICP, 全错.
+    def _match_rank(slug, name_l, prompt_slug):
+        if prompt_slug and prompt_slug == slug:
+            return (4, len(prompt_slug))
+        if name_l == slug:
+            return (3, len(name_l))
+        best = (0, 0)
+        if slug in name_l:
+            best = max(best, (2, len(slug)))
+        if name_l in slug:
+            best = max(best, (2, len(name_l)))
+        if prompt_slug:
+            if slug in prompt_slug:
+                best = max(best, (1, len(slug)))
+            if prompt_slug in slug:
+                best = max(best, (1, len(prompt_slug)))
+        return best
+
     matched = 0
     for sub in scene_sub:
         slug_lower = sub.name.lower()
-        # 在 OBJECTS 里找匹配的 name
         matched_obj = None
+        best_rank = (0, 0)
         for obj in OBJECTS:
             name = obj["name"]
             name_l = name.lower()
             prompt_slug = name_to_prompt_slug.get(name, "")
-            if (slug_lower in name_l or name_l in slug_lower
-                or (prompt_slug and (slug_lower in prompt_slug or prompt_slug in slug_lower))):
+            rank = _match_rank(slug_lower, name_l, prompt_slug)
+            if rank > best_rank:
+                best_rank = rank
                 matched_obj = obj
-                break
         if matched_obj is None:
             print(f"[warn] scene sub '{sub.name}' 没匹配到 OBJECTS, skip")
             continue

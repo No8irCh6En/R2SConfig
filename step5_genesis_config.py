@@ -47,22 +47,6 @@ from pipeline_config import OBJECTS
 from pipeline_paths import resolve as resolve_paths
 
 
-M_FLIP = np.diag([-1.0, 1.0, -1.0])  # PT3D cam (X-left, Z-fwd) ↔ Genesis cam (X-right, Z-back)
-
-
-def build_R_wc(pos: np.ndarray, lookat: np.ndarray, up: np.ndarray) -> np.ndarray:
-    """gluLookAt-style camera-in-world. 列是 cam axes 在 world 中的方向.
-    Genesis 内部 base_robot_env.py 的 add_camera 把 single 模式的 up 写死成 (0,0,1),
-    所以传 up=(0,0,1) 跟 Genesis 实际行为最一致."""
-    fwd = lookat - pos
-    fwd = fwd / np.linalg.norm(fwd)
-    cam_z = -fwd
-    cam_x = np.cross(up, cam_z)
-    cam_x = cam_x / np.linalg.norm(cam_x)
-    cam_y = np.cross(cam_z, cam_x)
-    return np.column_stack([cam_x, cam_y, cam_z])
-
-
 def resolve_mesh(obj_name: str) -> Path:
     """Resolve the mesh path for `obj_name` using pipeline_paths."""
     paths = resolve_paths()
@@ -83,22 +67,26 @@ def resolve_mesh(obj_name: str) -> Path:
     return max(cands, key=lambda p: p.stat().st_mtime)
 
 
-def compose_pose(R_rowvec, t, R_wc, cam_pos):
-    """PT3D camera frame 下的 (R_rowvec, t) → Genesis world 下的 (spawn_pos, R_genesis).
+def compose_pose(R_rowvec, t):
+    """World-frame: R, t 已经是 Genesis world 系下的 mesh→world. 直接转 Genesis 期望的格式.
 
-    重要: Genesis 加载 .glb 时**自动**把 mesh 从 Y-up 转 Z-up (genesis/engine/mesh.py:75,
-    跟我们 M_LOAD 是同一矩阵). 所以 Genesis 拿到的不是 raw V_raw, 而是 M_LOAD @ V_raw.
-    R_genesis 应作用在"已经 M_LOAD 过的 mesh"上, 公式里**不能再带 M_LOAD**, 否则会被算两次
-    (= 多绕 X 轴 180°, 让 mug 翻倒、tree z-轴朝里). PT3D step4 那边是用
-    load_glb_as_pytorch3d 显式做 M_LOAD, 跟 Genesis 自动做 M_LOAD 等价, 因此 PT3D 的 R
-    (row-vec) 跟 Genesis 期望的 R 共享同一个 mesh 起点.
+    Input (step3c 在 world frame 模式下输出):
+        R_rowvec (3x3): mesh→world 的 PT3D row-vec convention 旋转, 即 v_world = v_mesh @ R.
+        t (3,): mesh 在 world 里的位置 (Genesis z-up coords).
+    Output (Genesis 期望):
+        spawn_pos (3,): 就是 t.
+        R_genesis (3x3): col-vec form (v_world_col = R_genesis @ v_mesh_col), 即 R^T.
+    spawn_quat 从 R_genesis 算 (后面 quat_wxyz 函数做).
     """
     R = np.asarray(R_rowvec, dtype=np.float64)
     t = np.asarray(t, dtype=np.float64).reshape(3)
-    R_col = R.T                                      # PT3D row-vec → col-vec
-    R_genesis = R_wc @ M_FLIP @ R_col                # col-vec, "M_LOAD 后的 mesh → Genesis world"
-    spawn_pos = cam_pos + R_wc @ (M_FLIP @ t)
-    return spawn_pos, R_genesis
+    R_genesis = R.T.copy()
+    # ── assert_yaw: 验 step5 拿到的 R (从 scene.json) 跟 compose 后的 R_genesis 是不是纯 yaw ──
+    # yaw_z 矩阵的转置仍是 yaw_z (绕同轴反方向), 所以如果 R 是纯 yaw, R_genesis 也应该是.
+    from real2sim.utils import assert_yaw_pure
+    assert_yaw_pure(R,         "step5.compose_pose IN  (R_rowvec from scene.json)")
+    assert_yaw_pure(R_genesis, "step5.compose_pose OUT (R_genesis = R.T)")
+    return t.copy(), R_genesis
 
 
 def quat_wxyz(R: np.ndarray) -> list:
@@ -107,10 +95,27 @@ def quat_wxyz(R: np.ndarray) -> list:
 
 
 def mesh_bbox_in_world(mesh_path: Path, R_genesis: np.ndarray, spawn_pos: np.ndarray, scale: float):
-    """返回 mesh 在 world 系下经 R/spawn_pos 变换后的 (z_min, z_max)."""
+    """返回 mesh 在 world 系下经 R/spawn_pos 变换后的 (z_min, z_max).
+
+    Genesis 默认加载 .glb 时自动应用 M_LOAD (y-up → z-up). 这里要跟它一致, 否则
+    bbox 算的是 raw .glb 的 z 分量 (y-up 系下的"深度"方向), 跟 Genesis 实际渲出来
+    的"垂直方向"对不上 → z_offset 抬升用错了 z_min, 整体会被错误地抬几厘米.
+    SKIP_M_LOAD=1 时跟 mesh_io 一样跳过.
+    """
+    import os as _os
     import trimesh
     m = trimesh.load(str(mesh_path), force="mesh")
     v = np.asarray(m.vertices, dtype=np.float64)
+
+    # 应用 M_LOAD (跟 mesh_io.load_glb_as_pytorch3d / Genesis 默认一致)
+    if _os.environ.get("SKIP_M_LOAD", "0") != "1":
+        # M_PT3D = [[1,0,0],[0,0,-1],[0,1,0]];  v_loaded = v_raw @ M_PT3D.T
+        M_PT3D_T = np.array(
+            [[1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, -1.0, 0.0]],
+            dtype=np.float64,
+        )
+        v = v @ M_PT3D_T
+
     vmin, vmax = v.min(0), v.max(0)
     corners = np.array([[x, y, z] for x in (vmin[0], vmax[0])
                                     for y in (vmin[1], vmax[1])
@@ -120,6 +125,7 @@ def mesh_bbox_in_world(mesh_path: Path, R_genesis: np.ndarray, spawn_pos: np.nda
 
 
 def patch_object(env_cfg, key, mesh_path: Path, spawn_pos, spawn_quat, scale):
+    import os as _os
     obj = env_cfg.setdefault(key, {})
     obj["asset_path"] = str(mesh_path)
     obj["gs_path"] = None
@@ -129,6 +135,11 @@ def patch_object(env_cfg, key, mesh_path: Path, spawn_pos, spawn_quat, scale):
     morph = obj["entity_kwargs"]["morph_kwargs"]
     morph["file"] = str(mesh_path)
     morph["scale"] = float(scale)
+    # SKIP_M_LOAD=1: 告诉 Genesis "这文件已经是 z-up, 别再 M_LOAD 一次了". 必须配合
+    # PT3D 那边 load_glb_as_pytorch3d 也跳过 M_LOAD, 两边才一致.
+    if _os.environ.get("SKIP_M_LOAD", "0") == "1":
+        morph["file_meshes_are_zup"] = True
+        print(f"     [SKIP_M_LOAD] {key}: morph.file_meshes_are_zup=True")
 
 
 def main():
@@ -143,6 +154,10 @@ def main():
     # object → GSRL template slot mapping comes from pipeline_config.OBJECTS
     # (each entry's "slot" field). No CLI knobs to keep step5 in sync with
     # whatever scene was actually run.
+    # 但 mesh 可以 override: --mesh name=path (可重复). 用于 step3c 用了 tripo mesh,
+    # 但 step5 默认 resolve_mesh 拿的是 sam3d 输出, 这俩 metric 单位差很多, 必须保持一致.
+    p.add_argument("--mesh", action="append", default=[], metavar="NAME=PATH",
+                   help="覆盖某个 object 的 mesh: --mesh red_mug=example/mug_1_tripo.glb. 可重复.")
     p.add_argument("--camera-pos",    type=float, nargs=3, default=None)
     p.add_argument("--camera-lookat", type=float, nargs=3, default=None)
     p.add_argument("--camera-up",     type=float, nargs=3, default=None,
@@ -155,6 +170,20 @@ def main():
 
     scene_json_path = Path(args.scene_json) if args.scene_json else paths.scene_json_path
     output_path     = Path(args.output)     if args.output     else paths.gsrl_config_path
+
+    # 解析 --mesh name=path
+    mesh_overrides: dict[str, Path] = {}
+    for spec in args.mesh:
+        if "=" not in spec:
+            print(f"[step5] [fatal] --mesh 格式: name=path, 收到 {spec!r}"); sys.exit(2)
+        nm, pth = spec.split("=", 1)
+        p = Path(pth)
+        if not p.is_absolute():
+            p = (PROJECT_ROOT / p).resolve()
+        if not p.exists():
+            print(f"[step5] [fatal] --mesh {nm} 指向的文件不存在: {p}"); sys.exit(2)
+        mesh_overrides[nm] = p
+        print(f"[step5] [override] mesh[{nm}] = {p}")
 
     if not scene_json_path.exists():
         print(f"[step5] [fatal] scene.json 不存在: {scene_json_path}")
@@ -171,7 +200,6 @@ def main():
     cam_up_used = np.array([0.0, 0.0, 1.0])  # Genesis hard-codes single-mode up
     if args.camera_up is not None and not np.allclose(args.camera_up, cam_up_used):
         print(f"[step5] [info] --camera-up={args.camera_up} ignored; Genesis single 模式 up 写死 (0,0,1).")
-    R_wc = build_R_wc(cam_pos, cam_lookat, cam_up_used)
 
     print(f"[step5] scene.json    = {scene_json_path}")
     print(f"[step5] output config = {output_path}")
@@ -181,6 +209,13 @@ def main():
     print(f"        up     = {cam_up_used.tolist()}")
 
     by_name = {o["name"]: o for o in scene["objects"]}
+
+    # World-frame 是唯一支持的路径. scene.json 必须有 "frame": "world".
+    scene_frame = scene.get("frame", None)
+    if scene_frame != "world":
+        print(f"[step5] [fatal] scene.json frame={scene_frame!r}, 但只支持 'world'. "
+              f"请用 step3c 的 world-frame 版本生成新 scene.json.")
+        sys.exit(2)
 
     obj_poses = {}
     for obj_cfg in OBJECTS:
@@ -193,8 +228,12 @@ def main():
             print(f"[step5] [fatal] scene.json 没有 object '{src_name}'. 现有: {list(by_name)}")
             sys.exit(2)
         obj = by_name[src_name]
-        spawn_pos, R_genesis = compose_pose(obj["rotation"], obj["translation"], R_wc, cam_pos)
-        mesh_path = resolve_mesh(src_name)
+        spawn_pos, R_genesis = compose_pose(obj["rotation"], obj["translation"])
+        # mesh override 优先 (用于 step3c 训练用了非 sam3d 的 mesh, 比如 tripo reference).
+        if src_name in mesh_overrides:
+            mesh_path = mesh_overrides[src_name]
+        else:
+            mesh_path = resolve_mesh(src_name)
         scale = float(obj["scale"])
         z_min, z_max = mesh_bbox_in_world(mesh_path, R_genesis, spawn_pos, scale)
         obj_poses[dst_key] = (src_name, spawn_pos, R_genesis, mesh_path, scale, z_min, z_max)
@@ -208,8 +247,15 @@ def main():
         if z_offset > 0:
             print(f"[step5] mug+tree 最低点 z={global_zmin:.3f}m → 整体 (objects+camera+robot) 抬 {z_offset:.3f}m 避免穿地")
 
+    plane_z_final = float(env.get("scene", {}).get("plane_z", 0.0))
     for dst_key in obj_poses:
         (src_name, spawn_pos, R_g, mesh_path, scale, z_min, z_max) = obj_poses[dst_key]
+        # debug: 最低点是否真的贴 plane_z (z_offset 加上去后)
+        world_zmin_after_lift = z_min + z_offset
+        float_mm = (world_zmin_after_lift - plane_z_final) * 1000.0
+        print(f"[step5][debug] {dst_key} world height = {(z_max-z_min):.4f}m; "
+              f"z_min after lift = {world_zmin_after_lift:.4f} (plane_z={plane_z_final:.3f}; "
+              f"{'贴地 ✓' if abs(float_mm) < 1.0 else f'偏 {float_mm:+.1f}mm'})")
         spawn_pos_final = spawn_pos + np.array([0.0, 0.0, z_offset])
         quat = quat_wxyz(R_g)
         patch_object(env, dst_key, mesh_path, spawn_pos_final, quat, scale)

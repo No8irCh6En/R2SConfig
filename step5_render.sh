@@ -40,6 +40,10 @@ if [ ! -f "$RENDER_SCRIPT" ]; then
     echo "[step5_render] [fatal] render script 不存在: $RENDER_SCRIPT"; exit 1
 fi
 
+# 后面 pushd 到 GSRL-exp 之后还要 `python -c "open('$CONFIG')"` 读 workspace_dir,
+# 那时 cwd 不在 R2SConfig, 相对路径会 FileNotFoundError. 这里统一转绝对.
+CONFIG="$(readlink -f "$CONFIG")"
+
 # Conda hook
 if ! command -v conda >/dev/null 2>&1; then
     echo "[step5_render] [fatal] conda 不在 PATH"; exit 1

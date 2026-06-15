@@ -268,22 +268,75 @@ class Real2SimPipeline:
             else:
                 init_t_est = mesh["init_t"]
 
-            # Estimate initial scale from mask area vs mesh projected area
-            if mesh.get("init_scale", 1.0) == 1.0 and init_t_est is not None:
-                verts = mesh["verts"]
-                mesh_extent = (verts.max(dim=0).values - verts.min(dim=0).values).max()
-                # Projected size of mesh at Z distance
-                z_est = init_t_est[2].item()
-                projected_size = mesh_extent * fx / z_est
-                # Mask equivalent diameter
-                mask_area = obj_mask.sum().item()
-                mask_diameter = 2.0 * (mask_area / 3.14159) ** 0.5
-                est_scale = mask_diameter / (projected_size + 1e-8)
-                # Clamp to reasonable range; optimizer will refine
-                est_scale = max(0.1, min(est_scale, 3.0))
+            # Closed-form init (世界系下从几何反推 tx, ty, scale).
+            # 假设 yaw_only + floor_lock:
+            #   tx, ty  ← mask centroid 反投影到 plane_z
+            #   scale   ← 让 mesh canonical 高度投影后的像素高 = mask 像素高
+            # 没有 world_camera_params 退回老启发式 (PT3D-cam-frame 路径).
+            # mesh.skip_closed_form=True (来自 INIT_XY_<name> env hook) 会跳过闭式覆盖,
+            # 保留外部传进来的 init_t. 此时 init_scale 走 mesh.init_scale (没设的话默认 1.0).
+            if mesh.get("skip_closed_form", False):
+                est_scale = mesh.get("init_scale", 1.0)
+                _obj_name_dbg = mesh.get("name", f"object_{i}")
+                print(f"  [closed-form {_obj_name_dbg}] SKIPPED (skip_closed_form=True), "
+                      f"用外部 init_t={init_t_est.tolist()}, init_scale={est_scale}")
+            elif mesh.get("init_scale", 1.0) == 1.0 and init_t_est is not None:
+                wc = mesh.get("world_camera_params")
+                _obj_name_dbg = mesh.get("name", f"object_{i}")
+                if wc is not None:
+                    from .scene_geometry import (
+                        solve_init_pose_from_mask,
+                        solve_init_pose_from_mask_pointmap,
+                    )
+                    verts = mesh["verts"]
+                    mesh_z_extent = float((verts[:, 2].max() - verts[:, 2].min()).item())
+                    plane_z = float(wc["plane_z"])
+                    # 默认 mask-centroid backproject (最稳, 经多个场景验证).
+                    # USE_POINTMAP_INIT=1 切到 pointmap 版 (实验/debug 用; MoGe 在
+                    # 320x240 小图上 metric 不稳, 实测 mug/tree 都偏 1m+, 不推荐生产用).
+                    import os as _os
+                    if _os.environ.get("USE_POINTMAP_INIT", "0") == "1" and metric_pointmap is not None:
+                        solved = solve_init_pose_from_mask_pointmap(
+                            obj_mask, metric_pointmap, wc, plane_z, mesh_z_extent,
+                            device=self.device,
+                        )
+                    else:
+                        solved = solve_init_pose_from_mask(
+                            obj_mask, wc, plane_z, mesh_z_extent, device=self.device,
+                        )
+                    if solved is not None:
+                        tx_solved, ty_solved, est_scale_raw = solved
+                        est_scale = max(0.1, min(est_scale_raw, 3.0))
+                        # 用 closed-form 的 (tx, ty) 覆盖 init_t_est, tz 沿用 plane_z + 0.05
+                        # (floor_lock 会自己用 plane_z - s · z_min 算出真正的 tz, init_t.z 不重要)
+                        init_t_est = torch.tensor(
+                            [tx_solved, ty_solved, plane_z + 0.05],
+                            device=init_t_est.device, dtype=init_t_est.dtype,
+                        )
+                        print(f"  [closed-form {_obj_name_dbg}] "
+                              f"tx={tx_solved:.3f}  ty={ty_solved:.3f}  "
+                              f"mesh_z_extent={mesh_z_extent:.3f}  "
+                              f"scale_raw={est_scale_raw:.3f} → {est_scale:.3f} "
+                              f"(clamped [0.1, 3.0])")
+                    else:
+                        # solver 失败 (mask 空 / ray 不穿 plane), 退到 1.0
+                        est_scale = 1.0
+                        print(f"  [closed-form {_obj_name_dbg}] solver 失败, fallback init_scale=1.0")
+                else:
+                    # 老 PT3D-cam-frame 启发式
+                    verts = mesh["verts"]
+                    mesh_extent = float((verts.max(dim=0).values - verts.min(dim=0).values).max().item())
+                    z_est = float(init_t_est[2].item())
+                    mask_area = float(obj_mask.sum().item())
+                    mask_size_px = 2.0 * (mask_area / 3.14159) ** 0.5
+                    projected_size = mesh_extent * fx / max(z_est, 1e-6)
+                    est_scale = max(0.1, min(mask_size_px / (projected_size + 1e-8), 3.0))
+                    print(f"  [est_scale {_obj_name_dbg}] legacy heuristic, "
+                          f"est_scale={est_scale:.3f}")
             else:
                 est_scale = mesh.get("init_scale", 1.0)
 
+            _obj_name = mesh.get("name", f"object_{i}")
             result = self.optimizer.optimize(
                 mesh_verts=mesh["verts"],
                 mesh_faces=mesh["faces"],
@@ -298,8 +351,19 @@ class Real2SimPipeline:
                 init_R_candidates=mesh.get("init_R_candidates"),
                 vertex_colors=mesh.get("vertex_colors"),
                 verbose=True,
+                # ── World-frame mode 必备 (没传则 optimizer 内部 raise / 退化) ──
+                world_camera_params=mesh.get("world_camera_params"),
+                yaw_only=mesh.get("yaw_only"),
+                floor_constraint=mesh.get("floor_constraint"),
+                freeze_scale=mesh.get("freeze_scale"),
+                debug_save_dir=mesh.get("debug_save_dir"),
+                debug_name=_obj_name,
             )
-            result["name"] = mesh.get("name", f"object_{i}")
+            result["name"] = _obj_name
+            # ── 出口 assert_yaw: 验 R 从 optimizer 出来还是纯 yaw ──
+            from .utils import assert_yaw_pure
+            if mesh.get("yaw_only"):
+                assert_yaw_pure(result["R"], f"pipeline.py-after-optimize ({_obj_name})")
 
             # ── 多指标评估 + 可视化 ────────────────────────────────────
             try:
@@ -315,6 +379,7 @@ class Real2SimPipeline:
                     t=result["t"].to(self.device),
                     scale=result["scale"],
                     obj_name=result["name"],
+                    world_camera_params=mesh.get("world_camera_params"),
                 )
                 result["metrics"] = metrics
                 viz_base = Path(cfg.viz_output_dir) if cfg.viz_output_dir else out
@@ -330,12 +395,18 @@ class Real2SimPipeline:
             results.append(result)
 
         # ── 8. Export ───────────────────────────────────────────────
+        # 判断 R, t 在哪个 frame: 如果 mesh_data 里有 world_camera_params, 说明走的是
+        # world-frame 路径, R/t 直接是 Genesis world 系下的; 否则是 PT3D-cam 系 (老路径).
+        frame = "world" if any(
+            obj.get("world_camera_params") is not None for obj in (mesh_data or [])
+        ) else "pt3d_cam"
         export = {
             "camera": {"fx": fx, "fy": fy, "cx": cx, "cy": cy, "width": W, "height": H},
             "objects": results,
             "image_path": str(image_path),
             "text_prompt": text_prompt,
             "status": "ok",
+            "frame": frame,
         }
         save_scene_json(str(out / "scene.json"), export)
 
@@ -367,6 +438,7 @@ class Real2SimPipeline:
         t: torch.Tensor,
         scale: float,
         obj_name: str,
+        world_camera_params: Optional[Dict] = None,
     ):
         """渲染最终 mesh, 算多指标, 输出 4-panel 可视化。
 
@@ -398,12 +470,30 @@ class Real2SimPipeline:
         rasterizer = MeshRasterizer(raster_settings=raster)
         renderer = MeshRenderer(rasterizer=rasterizer, shader=SoftSilhouetteShader(blend_params=blend))
 
-        cameras = PerspectiveCameras(
-            focal_length=((fx, fy),), principal_point=((cx, cy),),
-            image_size=((H, W),), R=R[None], T=t[None],
-            device=self.device, in_ndc=False,
-        )
-        meshes = _Meshes(verts=[mesh_verts.to(self.device) * scale], faces=[mesh_faces.to(self.device)])
+        # ── World-frame mode: 相机摆位用 world_camera_params (跟 optimizer / sim_c0 一致) ──
+        # 没有 world_camera_params → 回退老 PT3D-cam-frame 路径 (R, t 当相机外参).
+        if world_camera_params is not None:
+            wc = world_camera_params
+            R_view = wc["R_view"].to(self.device).float()
+            T_view = wc["T_view"].to(self.device).float()
+            # 内参用 world_camera_params 的 (跟 optimizer Stage 1 fine level 一样)
+            wc_fx, wc_fy = wc["fx"], wc["fy"]
+            wc_cx, wc_cy = wc["cx"], wc["cy"]
+            cameras = PerspectiveCameras(
+                focal_length=((wc_fx, wc_fy),), principal_point=((wc_cx, wc_cy),),
+                image_size=((H, W),), R=R_view[None], T=T_view[None],
+                device=self.device, in_ndc=False,
+            )
+            # mesh 在世界里摆: v_world = v_canonical * scale @ R + t
+            mesh_world = mesh_verts.to(self.device) * scale @ R + t
+            meshes = _Meshes(verts=[mesh_world], faces=[mesh_faces.to(self.device)])
+        else:
+            cameras = PerspectiveCameras(
+                focal_length=((fx, fy),), principal_point=((cx, cy),),
+                image_size=((H, W),), R=R[None], T=t[None],
+                device=self.device, in_ndc=False,
+            )
+            meshes = _Meshes(verts=[mesh_verts.to(self.device) * scale], faces=[mesh_faces.to(self.device)])
 
         with torch.no_grad():
             sil_out = renderer(meshes, cameras=cameras)
@@ -554,6 +644,13 @@ class Real2SimPipeline:
                     "init_t": m.get("init_t"),
                     "init_scale": m.get("init_scale", 1.0),
                     "init_R_candidates": m.get("init_R_candidates"),
+                    # World-frame mode plumbing: 这些必须保留, 否则 optimizer 走默认 6D rotation,
+                    # yaw_only / floor_constraint / world_camera_params 全失效 (2026-06 修).
+                    "world_camera_params": m.get("world_camera_params"),
+                    "yaw_only":           m.get("yaw_only"),
+                    "floor_constraint":   m.get("floor_constraint"),
+                    "freeze_scale":       m.get("freeze_scale"),
+                    "debug_save_dir":     m.get("debug_save_dir"),
                 }
                 if entry["vertex_colors"] is not None:
                     entry["vertex_colors"] = entry["vertex_colors"].to(device)

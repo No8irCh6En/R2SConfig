@@ -14,6 +14,27 @@
 #   SCENE        scene_id; 默认 = 单 assets/scenes/* 子目录
 #   PROMPT_TAG   prompt 子目录前缀; 默认 "auto"
 #   RUN_TAG      run 目录后缀; 默认 ""
+#   MESHES       "name=path ..." 覆盖某些 object 的 mesh (透传 --meshes/--mesh)
+#   FREEZE_SCALE_<name>  1 → 冻结该 object 的 scale, 只优化 R/t
+#   INIT_SCALE_<name>    覆盖该 object 的 init_scale (配合 FREEZE_SCALE 用)
+#   YAW_ONLY             1 → 所有 object: R 退化为 yaw-only (绕 gravity), roll/pitch=0
+#   YAW_ONLY_<name>      1 → 只对该 object 启用 yaw_only
+#   YAW_USE_PCA          1 → yaw_only 时用 PCA 长轴当 up (默认信任 mesh canonical +Y)
+#   FLOOR_LOCK           1 → t 锁在 plane_z 平面 (mug 底始终贴桌), 只优化 (x, y) 2DOF
+#   FLOOR_LOCK_<name>    1 → 只对该 object 启用 floor_lock (需配合 YAW_ONLY=1)
+#   SKIP_M_LOAD          1 → PT3D + Genesis 都不应用 M_LOAD, mesh 保持 .glb 原始朝向
+#                          (用来测 "如果两边都不动 mesh 朝向, 杯子在 Genesis 里是什么样")
+#   WORLD_FRAME          1 → 优化器整个在 Genesis world 里跑, 相机摆 single_pos, R/t 直接是
+#                          mesh→Genesis-world; step5 不走 compose_pose. 推荐配合 YAW_ONLY=1
+#                          FLOOR_LOCK=1 一起用 (= 4 DOF: θ + t_x + t_y + s)
+#   GRAVITY_SRC          auto(默认)/cam/ransac: gravity 怎么估
+#                          auto = 先 cam, 失败 fallback ransac (推荐)
+#                          cam = 从 example/1.json 相机外参反推, 失败直接报错
+#                          ransac = 老 MoGe pointmap RANSAC 拟合最大平面
+#   K_SRC                auto(默认)/cam/moge: 相机内参 K 怎么算
+#                          auto = 先 cam (从 single_fov 反推), 失败 fallback moge
+#                          cam = 强制从 Genesis single_fov, 失败报错
+#                          moge = 老 MoGe 估的 (从图像内容反推, 易偏)
 #   REBUILD      1 → 忽略 build 缓存, 全部重跑
 #   ALLOW_NO_GPU 1 → 没 GPU 也强跑 (会非常慢)
 #
@@ -168,7 +189,7 @@ do_step2() {
             --mask_prompt "$SLUG" \
             --image_names "$IMAGE_NAMES" \
             2>&1 | tee -a "$PROJECT_ROOT/logs/step2_sam3d_${OBJ_NAME}.log"
-    done < <(python -c "
+    done < <(PYTHONPATH="$PROJECT_ROOT:${PYTHONPATH:-}" python -c "
 from pipeline_config import OBJECTS
 from pipeline_paths import resolve, sanitize_filename
 paths = resolve()
@@ -211,17 +232,27 @@ do_step3e() {
 }
 
 # ── Step 3c: Real2Sim 位姿优化  (env: sam3d-objects) ───────────
+# MESHES env var: 空格分隔的 "name=path" 对, 会透传给 --meshes (override 模式).
+# 例: MESHES="red_mug=example/mug_1.obj" bash fast_start.sh 3c
 do_step3c() {
     echo; echo "########## STEP 3c  (sam3d-objects env) ##########"
     run_p3d
-    python full_workflow.py --step 3c
+    local mesh_args=()
+    if [ -n "${MESHES:-}" ]; then
+        for pair in $MESHES; do mesh_args+=(--meshes "$pair"); done
+    fi
+    python full_workflow.py --step 3c "${mesh_args[@]+"${mesh_args[@]}"}"
 }
 
 # ── Step 4: 渲染对比  (env: sam3d-objects) ──────────────────────
 do_step4() {
     echo; echo "########## STEP 4  (sam3d-objects env) ##########"
     run_p3d
-    python full_workflow.py --step 4
+    local mesh_args=()
+    if [ -n "${MESHES:-}" ]; then
+        for pair in $MESHES; do mesh_args+=(--meshes "$pair"); done
+    fi
+    python full_workflow.py --step 4 "${mesh_args[@]+"${mesh_args[@]}"}"
 }
 
 # ── Step 5: 出 Genesis config + 用 gsrl-lc env 渲染 preview ──────
@@ -230,10 +261,28 @@ do_step5() {
 
     # 5a: 生成 gsrl_config.json (写到 RUN/gsrl_config.json)
     run_p3d
-    python step5_genesis_config.py 2>&1 | tee "$PROJECT_ROOT/logs/step5_config.log"
+    local mesh_args=()
+    if [ -n "${MESHES:-}" ]; then
+        for pair in $MESHES; do mesh_args+=(--mesh "$pair"); done
+    fi
+    python step5_genesis_config.py "${mesh_args[@]+"${mesh_args[@]}"}" 2>&1 | tee "$PROJECT_ROOT/logs/step5_config.log"
 
-    # 5b: render (独立脚本, 自己处理 conda activate gsrl-lc / PYTHONPATH)
+    # 5a.5: 趁还在 sam3d-objects env, 用 PT3D 也渲一张 (跟 Genesis 同相机, 方便对比)
+    local gsrl_config
+    gsrl_config=$(python -m pipeline_paths --field gsrl_config_path)
+    local pt3d_out
+    pt3d_out="$(dirname "$gsrl_config")/pt3d_preview.png"
+    python scripts/render_pt3d_check.py --config "$gsrl_config" --output "$pt3d_out" \
+        2>&1 | tee "$PROJECT_ROOT/logs/step5_pt3d_preview.log" || \
+        echo "[step5] PT3D preview 失败, 不影响 Genesis 渲染. Genesis 这边继续."
+
+    # 5b: Genesis render (独立脚本, 自己处理 conda activate gsrl-lc / PYTHONPATH)
     bash "$PROJECT_ROOT/step5_render.sh"
+
+    echo
+    echo "[step5] 两份对比图:"
+    echo "  PT3D:    $pt3d_out"
+    echo "  Genesis: $(dirname "$gsrl_config")/genesis_preview/sim_c0.png"
 }
 
 case "$STEP" in

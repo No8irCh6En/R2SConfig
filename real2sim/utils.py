@@ -69,6 +69,10 @@ def save_scene_json(path: str, results: dict):
             "width": results.get("width", None),
             "height": results.get("height", None),
         },
+        # R, t 是在哪个坐标系下:
+        #   "pt3d_cam" (默认, 老路径) — 需要 step5 compose_pose 转 Genesis world
+        #   "world"   (新 world-frame 路径) — 直接当 Genesis world 的 R, t, 不要转换
+        "frame": results.get("frame", "pt3d_cam"),
         "objects": [],
     }
     for obj in results.get("objects", []):
@@ -89,3 +93,24 @@ def ensure_output_dir(path: str) -> Path:
     p = Path(path)
     p.mkdir(parents=True, exist_ok=True)
     return p
+
+
+def assert_yaw_pure(R, label: str, tol: float = 1e-4) -> bool:
+    """检测 3x3 R 是否是纯 yaw_z (绕 +Z 转): R[2,:] = R[:,2] = (0,0,1).
+    打印结果并返回 True/False. 不会 raise (debug 用, 只 log).
+    R 可以是 np.ndarray, torch.Tensor, 或 list."""
+    import numpy as _np
+    if hasattr(R, "detach"):
+        R_np = R.detach().cpu().numpy()
+    else:
+        R_np = _np.asarray(R, dtype=_np.float64)
+    R_np = R_np.reshape(3, 3)
+    e3 = _np.array([0.0, 0.0, 1.0])
+    row2_ok = _np.allclose(R_np[2, :], e3, atol=tol)
+    col2_ok = _np.allclose(R_np[:, 2], e3, atol=tol)
+    is_yaw = row2_ok and col2_ok
+    tag = "YAW_PURE" if is_yaw else "NON_YAW"
+    print(f"  [assert_yaw][{tag}] {label}: "
+          f"R[2,:]={R_np[2,:].round(4).tolist()}  "
+          f"R[:,2]={R_np[:,2].round(4).tolist()}")
+    return is_yaw
