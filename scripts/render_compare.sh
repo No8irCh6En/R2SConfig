@@ -18,7 +18,7 @@ PROJECT_ROOT="$(pwd)"
 if [ $# -ge 1 ]; then
     CONFIG="$1"
 else
-    CONFIG=$(python -m pipeline_paths --field gsrl_config_path)
+    CONFIG=$(python -m real2sim.io.paths --field gsrl_config_path)
 fi
 CONFIG="$(readlink -f "$CONFIG")"
 if [ ! -f "$CONFIG" ]; then

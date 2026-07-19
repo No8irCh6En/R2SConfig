@@ -87,6 +87,21 @@ class OptimizerConfig:
     # 历史: 旧版本用 L1 mask + 0.3 weight, 但 L1 在 red/green 区域信号太弱,
     # loss 低 IoU 低同时出现 (2026-05-18 实测). 改成 soft-IoU 让 red/green 直接进 loss.
 
+    # Asymmetric silhouette loss (Tversky generalization of IoU).
+    #   IoU      = TP / (TP + FP + FN)            (= Tversky with α=β=1)
+    #   Tversky  = TP / (TP + α·FP + β·FN)
+    # where, with rendered alpha (green) vs target mask (red):
+    #   TP = green∩red, FP = green∖red (render spills OUTSIDE mask),
+    #   FN = red∖green (mask NOT covered by render).
+    # α>β ⇒ "rendered silhouette must stay INSIDE the mask, but it's OK if the
+    # mask isn't fully covered" — pins the handle DIRECTION (a wrong-way handle
+    # pokes green outside red → heavily penalized) while tolerating small under-
+    # coverage. The TP numerator means shrinking kills the reward (loss→1), so
+    # this does NOT collapse scale (unlike a pure precision/coverage penalty).
+    # Defaults 1.0/1.0 reproduce plain IoU exactly (opt-in, backward-compatible).
+    stage1_iou_fp_weight: float = 1.0   # α: penalty on green-outside-red (precision)
+    stage1_iou_fn_weight: float = 1.0   # β: penalty on red-not-covered  (recall)
+
     # SoftSilhouette sigma (silhouette 边界平滑度). 大 → 远距吸引力强但边界糊,
     # 小 → 边界锐利但远处无梯度. coarse-to-fine: 先大后小.
     stage1_sigma_coarse: float = 1e-2  # L0 用 (128x128, 粗搜)
@@ -98,6 +113,33 @@ class OptimizerConfig:
     # 比 area_ratio 鲁棒: IoU 形状敏感, mesh 撑出 mask 边界会被惩罚.
     learn_scale:        bool   = False
     stage1_lr_scale:    float  = 5e-3  # s_log 的 Adam lr (exp 参数化, 量纲 ≈ 0.1-0.5)
+
+    # Level 3: Distance-Transform silhouette loss.
+    # IoU loss has a degenerate min for asymmetric objects (mug handle, kettle
+    # spout): when mesh feature shape ≠ real feature shape, optimizer can pick a
+    # yaw that HIDES the mesh feature behind the body (mesh handle occluded →
+    # smaller union → higher IoU), even though the visual pose is wrong.
+    # DT loss = Σ_p (α·DT_out + (1-α)·DT_in) doesn't have this min: target's
+    # feature pixels still demand a rendered match (high DT_in penalty if α=0
+    # there), so "hidden" loses. Acts as soft Chamfer between rendered/target
+    # contours without the cost of explicit contour extraction.
+    use_dt_loss:        bool   = False
+    stage1_dt_weight:   float  = 2.0   # DT loss is normalized by max(H,W); 2.0 ≈ IoU scale
+    # Asymmetry within the DT loss (same idea as Tversky α/β, but distance-weighted):
+    #   dt = w_out·loss_out + w_in·loss_in
+    #   loss_out = green-outside-red, distance-from-mask weighted (precision)
+    #   loss_in  = red-not-covered,  distance-from-edge weighted  (recall)
+    # w_out>w_in ⇒ handle stays inside mask. NOTE: DT has no TP reward, so a high
+    # w_out with learn_scale CAN shrink scale — keep scale on area-ratio
+    # (--no-learn-scale) when using DT asymmetry. Defaults 1.0/1.0 = symmetric.
+    stage1_dt_w_out:    float  = 1.0   # precision (green outside mask)
+    stage1_dt_w_in:     float  = 1.0   # recall (mask not covered)
+    # When use_dt_loss=True, also add this weight × (1 - soft_iou) on top of DT.
+    # 0 (default) = pure DT (DT alone preserves scale ≈ contour match).
+    # >0 blends in IoU for higher coverage at the cost of scale being pulled
+    # back toward the IoU-preferred (often-smaller) value. Try 0.3-0.5 if you
+    # want a moderate coverage boost without losing the DT scale.
+    stage1_dt_iou_blend: float  = 0.0
 
     # Stage 1 (tx, ty) 多起点 grid search. 1 = 关 (老行为, 8 yaw × 1 init_t).
     # >1 = 在 init_t 周围 NxN grid 撒点, 每个点都跑一遍 (yaw × N×N candidates).

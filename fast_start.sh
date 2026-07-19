@@ -57,17 +57,17 @@ fi
 eval "$(conda shell.bash hook)"
 
 # ── resolve scene_id + 把 SCENE/PROMPT_TAG/RUN_TAG export 给 child python ──
-# (pipeline_config.py 也读 SCENE 来挑 per-scene OBJECTS, 必须 export 才能传下去)
-SCENE_ID=$(SCENE="${SCENE:-}" python -m pipeline_paths --field scene_id)
+# (real2sim/io/scenes.py 也读 SCENE 来挑 per-scene OBJECTS, 必须 export 才能传下去)
+SCENE_ID=$(SCENE="${SCENE:-}" python -m real2sim.io.paths --field scene_id)
 export SCENE="$SCENE_ID"
 export PROMPT_TAG="${PROMPT_TAG:-auto}"
 export RUN_TAG="${RUN_TAG:-}"
-PROMPT_ID=$(python -m pipeline_paths --field prompt_id)
+PROMPT_ID=$(python -m real2sim.io.paths --field prompt_id)
 echo "[preflight] SCENE      = $SCENE  (exported)"
 echo "[preflight] PROMPT_TAG = $PROMPT_TAG  (exported)"
 echo "[preflight] RUN_TAG    = $RUN_TAG  (exported)"
 echo "[preflight] prompt_id  = $PROMPT_ID"
-echo "[preflight] OBJECTS    = $(python -c "from pipeline_config import OBJECTS; print(OBJECTS)")"
+echo "[preflight] OBJECTS    = $(python -c "from real2sim.io.scenes import OBJECTS; print(OBJECTS)")"
 
 # ── 0. Pre-flight: 检查素材就位 ────────────────────────────────────
 require_path() {
@@ -76,16 +76,16 @@ require_path() {
     fi
 }
 
-SCENE_IMG=$(python -m pipeline_paths --field scene_image)
+SCENE_IMG=$(python -m real2sim.io.paths --field scene_image)
 require_path "$SCENE_IMG"
 
 # 每个 OBJECTS 的 images 目录都要在
 while IFS= read -r OBJ_NAME; do
-    IMG_DIR=$(python -m pipeline_paths --field object_images_dir --obj "$OBJ_NAME")
+    IMG_DIR=$(python -m real2sim.io.paths --field object_images_dir --obj "$OBJ_NAME")
     require_path "$IMG_DIR"
     N=$(find "$IMG_DIR" -maxdepth 1 -type f \( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' \) | wc -l)
     echo "[preflight]   object $OBJ_NAME views: $N  ($IMG_DIR)"
-done < <(python -c "from pipeline_config import OBJECTS; [print(o['name']) for o in OBJECTS]")
+done < <(python -c "from real2sim.io.scenes import OBJECTS; [print(o['name']) for o in OBJECTS]")
 
 echo "[preflight] scene.jpg = $SCENE_IMG"
 
@@ -122,7 +122,7 @@ case "$STEP" in
 esac
 
 if [ "$NEEDS_RUN_DIR" -eq 1 ]; then
-    NEW_RUN_DIR=$(python -m pipeline_paths --new-run-dir)
+    NEW_RUN_DIR=$(python -m real2sim.io.paths --new-run-dir)
     export RUN="$NEW_RUN_DIR"
     echo "[fast_start] RUN  = $RUN"
 else
@@ -190,8 +190,8 @@ do_step2() {
             --image_names "$IMAGE_NAMES" \
             2>&1 | tee -a "$PROJECT_ROOT/logs/step2_sam3d_${OBJ_NAME}.log"
     done < <(PYTHONPATH="$PROJECT_ROOT:${PYTHONPATH:-}" python -c "
-from pipeline_config import OBJECTS
-from pipeline_paths import resolve, sanitize_filename
+from real2sim.io.scenes import OBJECTS
+from real2sim.io.paths import resolve, sanitize_filename
 paths = resolve()
 for o in OBJECTS:
     print(f\"{o['name']}\t{paths.build_object_dir(o['name'], o['prompt']).resolve()}\t{sanitize_filename(o['prompt'])}\")
@@ -221,14 +221,14 @@ do_step3b() {
 do_step3d() {
     echo; echo "########## STEP 3d  (sam3d-objects env) ##########"
     run_p3d
-    python step3d_scene_pose.py
+    python -m real2sim.pose.scene_pose
 }
 
 # ── Step 3e: ICP 把 multi-view mesh 对齐到 scene mesh, 出 init pose ──
 do_step3e() {
     echo; echo "########## STEP 3e  (sam3d-objects env) ##########"
     run_p3d
-    python step3e_align_meshes.py
+    python -m real2sim.pose.align_meshes
 }
 
 # ── Step 3c: Real2Sim 位姿优化  (env: sam3d-objects) ───────────
@@ -265,11 +265,11 @@ do_step5() {
     if [ -n "${MESHES:-}" ]; then
         for pair in $MESHES; do mesh_args+=(--mesh "$pair"); done
     fi
-    python step5_genesis_config.py "${mesh_args[@]+"${mesh_args[@]}"}" 2>&1 | tee "$PROJECT_ROOT/logs/step5_config.log"
+    python -m real2sim.export.genesis_config "${mesh_args[@]+"${mesh_args[@]}"}" 2>&1 | tee "$PROJECT_ROOT/logs/step5_config.log"
 
     # 5a.5: 趁还在 sam3d-objects env, 用 PT3D 也渲一张 (跟 Genesis 同相机, 方便对比)
     local gsrl_config
-    gsrl_config=$(python -m pipeline_paths --field gsrl_config_path)
+    gsrl_config=$(python -m real2sim.io.paths --field gsrl_config_path)
     local pt3d_out
     pt3d_out="$(dirname "$gsrl_config")/pt3d_preview.png"
     python scripts/render_pt3d_check.py --config "$gsrl_config" --output "$pt3d_out" \
@@ -311,7 +311,7 @@ esac
 
 # ── 成功收尾: 更新 outputs/runs/latest symlink ─────────────────────────
 if [ "$NEEDS_RUN_DIR" -eq 1 ] && [ -d "${RUN:-}" ]; then
-    python -m pipeline_paths --update-latest "$RUN" > /dev/null
+    python -m real2sim.io.paths --update-latest "$RUN" > /dev/null
     echo
     echo "[fast_start] outputs/runs/latest → $RUN"
 fi

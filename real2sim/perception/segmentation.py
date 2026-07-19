@@ -36,12 +36,16 @@ class GroundedSAM:
         box_threshold: float = 0.25,
         text_threshold: float = 0.25,
         device: str = "cuda",
+        verbose: bool = True,
+        max_det: int = 5,
     ):
         self.device = torch.device(
             device if torch.cuda.is_available() and device == "cuda" else "cpu"
         )
         self.box_threshold = box_threshold
         self.text_threshold = text_threshold
+        self.verbose = verbose
+        self.max_det = max_det
 
         self.sam3_available = False
         self.dino_available = False
@@ -115,7 +119,7 @@ class GroundedSAM:
 
         # Expand masks to recover occluded regions
         if expand_mask_iters > 0 and masks.shape[0] > 0:
-            from .utils import dilate_mask
+            from ..viz.utils import dilate_mask
 
             expanded = []
             for m in masks:
@@ -165,44 +169,63 @@ class GroundedSAM:
                 boxes = result.get("boxes")
 
                 if len(scores) == 0:
+                    if self.verbose:
+                        print(f"      [sam3] '{prompt}': 0 raw detections")
                     continue
 
-                best_idx = scores.argmax().item()
-                if scores[best_idx].item() < self.box_threshold:
-                    continue
-
-                # Resize mask from model resolution → original image size
-                mask = masks[best_idx]
-                if mask.ndim == 2:
-                    mask = mask.unsqueeze(0).unsqueeze(0)  # (1, 1, H_m, W_m)
-                elif mask.ndim == 3:
-                    mask = mask.unsqueeze(0)
-                mask = torch.nn.functional.interpolate(
-                    mask.float(), size=(H, W), mode="bilinear"
-                )[0, 0]
-
-                all_masks.append(mask > 0.5)
-                all_scores.append(scores[best_idx])
-                all_labels.append(prompt)
-
-                # Convert SAM3 box (cxcywh normalized) → xyxy pixel
-                if boxes is not None and len(boxes) > best_idx:
-                    b = boxes[best_idx].tolist()
-                    cx, cy, bw, bh = b[0], b[1], b[2], b[3]
-                    x1 = (cx - bw / 2) * W
-                    y1 = (cy - bh / 2) * H
-                    x2 = (cx + bw / 2) * W
-                    y2 = (cy + bh / 2) * H
-                    all_boxes.append([x1, y1, x2, y2])
-                else:
-                    # No box → derive from mask
-                    ys, xs = torch.where(mask > 0.5)
-                    if len(ys) > 0:
-                        all_boxes.append(
-                            [xs.min().item(), ys.min().item(), xs.max().item(), ys.max().item()]
-                        )
+                # SAM3 is a concept segmenter: one prompt can return MANY instances
+                # (+ many overlapping proposals). Keep the top-K DISTINCT instances
+                # above box_threshold (centroid-deduped), not just the single best —
+                # otherwise two same-colour objects ("gray block" = arc AND rec)
+                # collapse to one.
+                best_score = float(scores.max())
+                order = torch.argsort(scores, descending=True).tolist()
+                kept_centroids: list = []
+                kept_scores: list = []
+                for j in order:
+                    sj = float(scores[j])
+                    if sj < self.box_threshold or len(kept_scores) >= self.max_det:
+                        break  # scores sorted descending → the rest are lower
+                    mask = masks[j]
+                    if mask.ndim == 2:
+                        mask = mask.unsqueeze(0).unsqueeze(0)
+                    elif mask.ndim == 3:
+                        mask = mask.unsqueeze(0)
+                    mask = torch.nn.functional.interpolate(
+                        mask.float(), size=(H, W), mode="bilinear"
+                    )[0, 0]
+                    m_bool = mask > 0.5
+                    ys, xs = torch.where(m_bool)
+                    if len(ys) == 0:
+                        continue
+                    cx_, cy_ = float(xs.float().mean()), float(ys.float().mean())
+                    if any((cx_ - px) ** 2 + (cy_ - py) ** 2 < 15 ** 2
+                           for px, py in kept_centroids):
+                        continue  # near-duplicate of an instance already kept
+                    kept_centroids.append((cx_, cy_))
+                    kept_scores.append(sj)
+                    all_masks.append(m_bool)
+                    all_scores.append(scores[j])
+                    all_labels.append(prompt)
+                    if boxes is not None and len(boxes) > j:
+                        b = boxes[j].tolist()
+                        cx, cy, bw, bh = b[0], b[1], b[2], b[3]
+                        all_boxes.append([(cx - bw / 2) * W, (cy - bh / 2) * H,
+                                          (cx + bw / 2) * W, (cy + bh / 2) * H])
                     else:
-                        all_boxes.append([0, 0, W, H])
+                        all_boxes.append([xs.min().item(), ys.min().item(),
+                                          xs.max().item(), ys.max().item()])
+
+                if not kept_scores:
+                    if self.verbose:
+                        print(f"      [sam3] '{prompt}': best raw score {best_score:.3f} "
+                              f"< box_threshold {self.box_threshold} "
+                              f"({len(scores)} raw det) — DROPPED")
+                    continue
+                if self.verbose:
+                    print(f"      [sam3] '{prompt}': kept {len(kept_scores)} distinct "
+                          f"score(s) {[round(s, 3) for s in kept_scores]} "
+                          f"({len(scores)} raw det)")
 
         if not all_masks:
             return (

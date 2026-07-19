@@ -21,12 +21,12 @@ from typing import Optional, List, Dict
 import json
 
 from .config import PipelineConfig
-from .segmentation import GroundedSAM
-from .inpainting import LaMaInpainter
-from .depth import DepthEstimator
-from .optimizer import PoseOptimizer
-from .camera import intrinsics_from_hfov, build_camera_matrix
-from .utils import ensure_output_dir, save_scene_json
+from .perception.segmentation import GroundedSAM
+from .perception.inpainting import LaMaInpainter
+from .perception.depth import DepthEstimator
+from .perception.camera import intrinsics_from_hfov, build_camera_matrix
+from .pose.optimizer import PoseOptimizer
+from .viz.utils import ensure_output_dir, save_scene_json
 
 
 class Real2SimPipeline:
@@ -132,7 +132,7 @@ class Real2SimPipeline:
 
         # ── 3. Segmentation ─────────────────────────────────────────
         if precomputed_masks is not None:
-            from .segmentation import SegmentationResult
+            from .perception.segmentation import SegmentationResult
 
             print(f"[Pipeline] Using {len(precomputed_masks)} precomputed mask(s); "
                   f"skipping SAM3.")
@@ -284,7 +284,7 @@ class Real2SimPipeline:
                 wc = mesh.get("world_camera_params")
                 _obj_name_dbg = mesh.get("name", f"object_{i}")
                 if wc is not None:
-                    from .scene_geometry import (
+                    from .pose.scene_geometry import (
                         solve_init_pose_from_mask,
                         solve_init_pose_from_mask_pointmap,
                     )
@@ -361,7 +361,7 @@ class Real2SimPipeline:
             )
             result["name"] = _obj_name
             # ── 出口 assert_yaw: 验 R 从 optimizer 出来还是纯 yaw ──
-            from .utils import assert_yaw_pure
+            from .viz.utils import assert_yaw_pure
             if mesh.get("yaw_only"):
                 assert_yaw_pure(result["R"], f"pipeline.py-after-optimize ({_obj_name})")
 

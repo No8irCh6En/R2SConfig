@@ -18,7 +18,7 @@
 
 跑法:
     conda activate sam3d-objects
-    python step3d_scene_pose.py
+    python -m real2sim.pose.scene_pose
 """
 
 import os
@@ -27,11 +27,11 @@ from pathlib import Path
 import numpy as np
 import torch
 
-PROJECT_ROOT = Path(__file__).resolve().parent
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent  # real2sim/pose/.. .. == R2SConfig/
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from pipeline_config import OBJECTS
-from pipeline_paths import resolve as resolve_paths, sanitize_filename, should_rebuild
+from real2sim.io.scenes import OBJECTS
+from real2sim.io.paths import resolve as resolve_paths, sanitize_filename, should_rebuild
 from full_workflow import MV_SAM3D_DIR
 
 

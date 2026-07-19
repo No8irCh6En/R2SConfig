@@ -40,11 +40,11 @@ import numpy as np
 from scipy.spatial.transform import Rotation as Rscipy
 
 
-PROJECT_ROOT = Path(__file__).resolve().parent
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent  # real2sim/export/.. .. == R2SConfig/
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from pipeline_config import OBJECTS
-from pipeline_paths import resolve as resolve_paths
+from real2sim.io.scenes import OBJECTS
+from real2sim.io.paths import resolve as resolve_paths
 
 
 def resolve_mesh(obj_name: str) -> Path:
@@ -83,7 +83,7 @@ def compose_pose(R_rowvec, t):
     R_genesis = R.T.copy()
     # ── assert_yaw: 验 step5 拿到的 R (从 scene.json) 跟 compose 后的 R_genesis 是不是纯 yaw ──
     # yaw_z 矩阵的转置仍是 yaw_z (绕同轴反方向), 所以如果 R 是纯 yaw, R_genesis 也应该是.
-    from real2sim.utils import assert_yaw_pure
+    from real2sim.viz.utils import assert_yaw_pure
     assert_yaw_pure(R,         "step5.compose_pose IN  (R_rowvec from scene.json)")
     assert_yaw_pure(R_genesis, "step5.compose_pose OUT (R_genesis = R.T)")
     return t.copy(), R_genesis

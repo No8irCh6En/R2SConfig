@@ -5,14 +5,9 @@ logs
 assets
 outputs
 *__pycache__*
-debug*
 
-# debug / planning notes (not part of pipeline)
-PLAN_REAL2SIM_V2.md
-findings.md
-progress.md
-task_plan.md
-check_err.py
-inspect_sam3d_scale.py
-show_sam3d_pose.py
-yaw_sweep.py
+# scratch dirs — personal debug / planning notes, not part of pipeline
+debug/
+docs/
+debug.log
+_kept_debug/

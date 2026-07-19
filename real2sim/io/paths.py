@@ -55,10 +55,10 @@ Env vars (env > default)
 
 CLI
 ---
-    python -m pipeline_paths --field <name> [--obj <obj_name>]
-    python -m pipeline_paths --json
-    python -m pipeline_paths --new-run-dir       # allocate fresh ts dir + write manifest
-    python -m pipeline_paths --update-latest <dir>
+    python -m real2sim.io.paths --field <name> [--obj <obj_name>]
+    python -m real2sim.io.paths --json
+    python -m real2sim.io.paths --new-run-dir       # allocate fresh ts dir + write manifest
+    python -m real2sim.io.paths --update-latest <dir>
 """
 
 from __future__ import annotations
@@ -74,10 +74,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-from pipeline_config import OBJECTS, SCENE_PROMPT, MASK_CONFIDENCE
+from .scenes import OBJECTS, SCENE_PROMPT, MASK_CONFIDENCE
 
 
-PROJECT_ROOT = Path(__file__).resolve().parent
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent  # real2sim/io/.. .. == R2SConfig/
 
 
 def sanitize_filename(name: str) -> str:

@@ -47,7 +47,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 # ─────────────────────────────────────────────────────────────────────
-# 路径与配置: 集中在 pipeline_paths.py / pipeline_config.py.
+# 路径与配置: 集中在 real2sim/io/{paths,scenes}.py.
 # 这里只保留 PROJECT_ROOT 和外部仓库目录 (别人的代码, 不动).
 # ─────────────────────────────────────────────────────────────────────
 
@@ -60,9 +60,9 @@ VISUALIZATION_DIR = MV_SAM3D_DIR / "visualization"      # SAM3D 写死的输出�
 # 让 real2sim 包可被 import (顶层目录 == sys.path 第一个)
 sys.path.insert(0, str(PROJECT_ROOT))
 
-# 共享配置 / 路径解析器 (路径布局: 见 pipeline_paths.py 顶部 docstring)
-from pipeline_config import OBJECTS, SCENE_PROMPT, MASK_CONFIDENCE  # noqa: E402
-from pipeline_paths import (  # noqa: E402
+# 共享配置 / 路径解析器 (路径布局: 见 real2sim/io/paths.py 顶部 docstring)
+from real2sim.io.scenes import OBJECTS, SCENE_PROMPT, MASK_CONFIDENCE  # noqa: E402
+from real2sim.io.paths import (  # noqa: E402
     resolve as resolve_paths,
     obj_hash,
     sanitize_filename as _sanitize_pp,
@@ -73,18 +73,18 @@ from pipeline_paths import (  # noqa: E402
     PipelinePaths,
 )
 
-# Mesh I/O + scene geometry helpers 抽到 real2sim/ 下了 (2026-06 refactor),
-# 这里 re-export 给老调用者 (step3e 还从 full_workflow import find_glb_files).
-from real2sim.mesh_io import (  # noqa: E402, F401
+# Re-export helpers for the moved step scripts (step3e_align_meshes,
+# step3d_scene_pose still `from full_workflow import find_glb_files / MV_SAM3D_DIR`).
+from real2sim.perception.mesh_io import (  # noqa: E402, F401
     find_glb_files,
     link_object_mesh,
     load_glb_as_pytorch3d,
 )
-from real2sim.scene_geometry import (  # noqa: E402
+from real2sim.pose.scene_geometry import (  # noqa: E402
     pt3d_world_camera_from_genesis,
     yaw_rotation_matrix,
 )
-from real2sim.render_compare import step4_render as _step4_render_impl  # noqa: E402
+from real2sim.export.render_compare import step4_render as _step4_render_impl  # noqa: E402
 
 # SAM3D 入口 (相对 MV-SAM3D/)
 SAM3D_SCRIPT = "run_inference_weighted.py"
@@ -347,7 +347,7 @@ def step3a_scene_segmentation(scene_image: str, scene_prompt: str):
 
     import torch
     from PIL import Image, ImageDraw
-    from real2sim.segmentation import GroundedSAM
+    from real2sim.perception.segmentation import GroundedSAM
 
     paths = resolve_paths()
     force = should_rebuild()
@@ -403,7 +403,7 @@ def step3a_scene_segmentation(scene_image: str, scene_prompt: str):
     # step 3c (sam3d-objects env) loads the result and skips its own inpaint.
     if masks.shape[0] > 0:
         try:
-            from real2sim.inpainting import LaMaInpainter
+            from real2sim.perception.inpainting import LaMaInpainter
 
             combined_mask = masks.any(dim=0)
             inp_device = "cuda" if torch.cuda.is_available() else "cpu"

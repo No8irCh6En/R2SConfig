@@ -22,7 +22,7 @@
 
 跑法:
     conda activate sam3d-objects
-    python step3e_align_meshes.py
+    python -m real2sim.pose.align_meshes
 """
 
 import os
@@ -34,11 +34,11 @@ import torch
 import trimesh
 import open3d as o3d
 
-PROJECT_ROOT = Path(__file__).resolve().parent
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent  # real2sim/pose/.. .. == R2SConfig/
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from pipeline_config import OBJECTS
-from pipeline_paths import resolve as resolve_paths, sanitize_filename, should_rebuild
+from real2sim.io.scenes import OBJECTS
+from real2sim.io.paths import resolve as resolve_paths, sanitize_filename, should_rebuild
 from full_workflow import find_glb_files
 
 

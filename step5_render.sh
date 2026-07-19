@@ -5,7 +5,7 @@
 # 跟 fast_start.sh 拆开是因为 GSRL-exp 用 src-layout 的 'sim' 包, import 时要把它的
 # 根目录 (= GSRL-exp/) 放进 PYTHONPATH; 留在 fast_start.sh 里会污染主 env.
 #
-# run_dir 来自 pipeline_paths (env: SCENE, PROMPT_TAG, RUN_TAG, RUN).
+# run_dir 来自 real2sim.io.paths (env: SCENE, PROMPT_TAG, RUN_TAG, RUN).
 # 如果调用方 export 了 RUN, 就用它; 否则解析 outputs/runs/latest.
 #
 # 用法:
@@ -28,9 +28,9 @@ if [ $# -ge 1 ]; then
     OUT_DIR="$(dirname "$(readlink -f "$CONFIG")")/genesis_preview"
     LOG_FILE="$(dirname "$(readlink -f "$CONFIG")")/step5_render.log"
 else
-    CONFIG=$(python -m pipeline_paths --field gsrl_config_path)
-    OUT_DIR=$(python -m pipeline_paths --field genesis_preview_dir)
-    LOG_FILE=$(python -m pipeline_paths --field step5_render_log)
+    CONFIG=$(python -m real2sim.io.paths --field gsrl_config_path)
+    OUT_DIR=$(python -m real2sim.io.paths --field genesis_preview_dir)
+    LOG_FILE=$(python -m real2sim.io.paths --field step5_render_log)
 fi
 
 if [ ! -f "$CONFIG" ]; then

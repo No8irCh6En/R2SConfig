@@ -11,7 +11,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Dict, Optional
 
-from .mesh_io import load_glb_as_pytorch3d
+from ..perception.mesh_io import load_glb_as_pytorch3d
 
 
 def step4_render(

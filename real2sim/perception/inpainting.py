@@ -65,7 +65,7 @@ class LaMaInpainter:
         result = self._run_inpaint(image, mask_img)
 
         for _ in range(refine_iters):
-            from .utils import dilate_mask
+            from ..viz.utils import dilate_mask
 
             mask = dilate_mask(mask, kernel_size=5, iters=1)
             mask_np = mask.cpu().numpy().astype(np.uint8) * 255
@@ -108,7 +108,7 @@ def inpaint_with_sequential_fill(
     """
     result = image.copy()
     for mask in masks:
-        from .utils import dilate_mask
+        from ..viz.utils import dilate_mask
 
         dilated = dilate_mask(mask, kernel_size=border_expand, iters=1)
         result = inpainter.inpaint(result, dilated)
