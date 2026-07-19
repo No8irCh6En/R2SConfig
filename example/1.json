@@ -33,6 +33,9 @@
             "type": "ufactory_xarm",
             "use_bimanual": false,
             "arm_side": "right",
+            "urdf": "urdf/xarm/xarm7_with_gripper.urdf",
+            "joint_unit": "rad",
+            "n_arm_joints": 7,
             "ik_method": "pink",
             "pink_ik_threshold": 0.002,
             "pink_ik_failure_mode": "noop",
@@ -83,39 +86,39 @@
                 480
             ],
             "single_pos": [
-                0.9112,
-                -0.2669,
-                0.3065
+                0.9245847545698423,
+                -0.2673257743957612,
+                0.29262734845356575
             ],
             "single_up": [
-                -0.428,
-                0.003,
-                0.9038
+                -0.4026467988136912,
+                0.003829026388262067,
+                0.915347557959593
             ],
             "single_lookat": [
-                0.0074,
-                -0.2728,
-                -0.1215
+                0.009235366368733455,
+                -0.26534719721519623,
+                -0.11002849407999282
             ],
-            "single_fov": 64.81,
+            "single_fov": 64.48189401393194,
             "single_near": 0.01,
             "single_far": 10.0,
             "ego_pos": [
-                0.9112,
-                -0.2669,
-                0.3065
+                0.9245847545698423,
+                -0.2673257743957612,
+                0.29262734845356575
             ],
             "ego_up": [
-                -0.428,
-                0.003,
-                0.9038
+                -0.4026467988136912,
+                0.003829026388262067,
+                0.915347557959593
             ],
             "ego_lookat": [
-                0.0074,
-                -0.2728,
-                -0.1215
+                0.009235366368733455,
+                -0.26534719721519623,
+                -0.11002849407999282
             ],
-            "ego_fov": 64.81,
+            "ego_fov": 64.48189401393194,
             "ego_near": 0.01,
             "ego_far": 10.0,
             "wrist_fov": 64.5,
@@ -177,7 +180,7 @@
             "handle_offset": [
                 0.0,
                 -0.066,
-                0.030
+                0.03
             ],
             "grasp_offset": [
                 0.0,
@@ -208,7 +211,7 @@
             "asset_path": "assets/objects/mug_tree/object_0.glb",
             "gs_path": "assets/objects/mug_tree/object_0.ply",
             "spawn_pos": [
-                0.60,
+                0.6,
                 -0.03,
                 0.24
             ],
@@ -221,7 +224,7 @@
             "active_hook_offset": [
                 0.0,
                 -0.12,
-                0.10
+                0.1
             ],
             "visualize_hook_target": true,
             "entity_kwargs": {
@@ -257,7 +260,7 @@
             "action_rate_weight": -0.0001,
             "success_bonus": 10.0,
             "success_dist": 0.035,
-            "success_xy_dist": 0.030,
+            "success_xy_dist": 0.03,
             "success_z_dist": 0.025,
             "success_min_lift": 0.08,
             "success_hold_steps": 4,

@@ -1,0 +1,365 @@
+{
+  "_note": "REFERENCE / FALLBACK ONLY \u2014 this is a hand-authored config in the zplane RL frame (plane_z=-0.45) and does NOT match the rm65b-sort dataset frame. For real generation use the R2SConfig-exported gsrl_config.json (scene frame, plane_z=0, real ego extrinsic). See experiments/real2sim/profiles/rm65b_sort.json. Kept only to show the env block structure.",
+  "env": {
+    "env_class": "sim.tasks.place_in_basket_sort:PlaceInBasketSortEnv",
+    "n_envs": 1,
+    "seed": 0,
+    "GUI": false,
+    "control_substeps": 2,
+    "include_sim_rgb": false,
+    "include_gs_rgb": false,
+    "robot": {
+      "type": "realman_rm65b_bimanual",
+      "use_bimanual": true,
+      "arm_side": "right",
+      "train_arm_mode": "both",
+      "ik_method": "pink",
+      "pink_ik_threshold": 0.002,
+      "pink_ik_failure_mode": "noop",
+      "pos": [
+        0.2,
+        0.0,
+        0.0
+      ],
+      "quat": [
+        1.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "pos_left": [
+        -0.039,
+        0.0,
+        -0.027
+      ],
+      "quat_left": [
+        1.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "pos_right": [
+        -0.039,
+        0.0,
+        -0.027
+      ],
+      "quat_right": [
+        1.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "home_qpos": null,
+      "home_qpos_left": [
+        0.6108652381980153,
+        -0.4363323129985824,
+        -1.3089969389957472,
+        1.7453292519943295,
+        -0.8726646259971648,
+        2.356194490192345,
+        0.025,
+        0.025
+      ],
+      "home_qpos_right": [
+        -0.6108652381980153,
+        0.4363323129985824,
+        1.3089969389957472,
+        -1.7453292519943295,
+        0.8726646259971648,
+        0.7853981633974483,
+        0.025,
+        0.025
+      ],
+      "home_eef_pos_left": [
+        0.58,
+        0.08,
+        0.22
+      ],
+      "home_eef_quat_left": [
+        0.0,
+        1.0,
+        0.0,
+        0.0
+      ],
+      "home_eef_pos_right": [
+        0.58,
+        -0.08,
+        0.22
+      ],
+      "home_eef_quat_right": [
+        0.0,
+        1.0,
+        0.0,
+        0.0
+      ]
+    },
+    "camera": {
+      "with_camera": true,
+      "mode": "ego_wrist",
+      "res": [
+        640,
+        480
+      ],
+      "ego_pos": [
+        1.6,
+        0.0,
+        0.15
+      ],
+      "ego_lookat": [
+        0.0,
+        0.0,
+        -0.4
+      ],
+      "ego_up": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "ego_fov": 40.0,
+      "wrist_offset_pos": [
+        -0.1,
+        0.0,
+        0.0
+      ],
+      "wrist_offset_lookat": [
+        -0.1,
+        0.0,
+        0.12
+      ],
+      "wrist_offset_up": [
+        0.0,
+        1.0,
+        0.0
+      ],
+      "wrist_camera_flip": [
+        [
+          1,
+          0,
+          0
+        ],
+        [
+          0,
+          -1,
+          0
+        ],
+        [
+          0,
+          0,
+          -1
+        ]
+      ],
+      "wrist_camera_rotation": [
+        [
+          0,
+          0,
+          -1
+        ],
+        [
+          0,
+          1,
+          0
+        ],
+        [
+          1,
+          0,
+          0
+        ]
+      ],
+      "left_wrist_link_name": "l_link6",
+      "right_wrist_link_name": "r_link6"
+    },
+    "gs_render": {
+      "enable": true,
+      "include_robot_gs": true,
+      "include_table_gs": true,
+      "color_align": false,
+      "workspace_dir": "experiments/real2sim/rm65b/workspace_bi_0606_v2_es"
+    },
+    "scene": {
+      "plane_z": -0.45,
+      "plane_z_randomization": {
+        "enable": false,
+        "delta_range": [
+          0.0,
+          0.0
+        ],
+        "batch_shared": false,
+        "move_targets": true,
+        "move_baskets": true
+      },
+      "visualize_target": false
+    },
+    "target": {
+      "reset_strict_json": false,
+      "defaults": {
+        "spawn_pos": [
+          0.45,
+          0.0,
+          -0.44
+        ],
+        "random_xy": 0.0,
+        "random_yaw_deg": 0.0,
+        "spawn_on_plane": true,
+        "spawn_plane_clearance": 0.002
+      },
+      "specs": [
+        {
+          "mode": "rigid",
+          "tag": "arc_target",
+          "spawn_pos": [
+            0.45,
+            -0.15,
+            -0.44
+          ],
+          "random_xy": 0.0,
+          "random_yaw_deg": 0.0,
+          "gs_path": "assets/objects/arc/object_0.ply",
+          "entity_kwargs": {
+            "material_kwargs": {
+              "type": "rigid",
+              "needs_coup": true,
+              "coup_friction": 1.1,
+              "coup_restitution": 0.05
+            },
+            "morph_kwargs": {
+              "type": "mesh",
+              "file": "assets/objects/arc/object_0.glb",
+              "scale": 1.0
+            },
+            "surface_kwargs": {
+              "type": "default",
+              "color": [
+                0.85,
+                0.2,
+                0.2
+              ]
+            }
+          }
+        },
+        {
+          "mode": "rigid",
+          "tag": "rec_target",
+          "spawn_pos": [
+            0.45,
+            0.15,
+            -0.44
+          ],
+          "random_xy": 0.0,
+          "random_yaw_deg": 0.0,
+          "gs_path": "assets/objects/rec/object_0.ply",
+          "entity_kwargs": {
+            "material_kwargs": {
+              "type": "rigid",
+              "needs_coup": true,
+              "coup_friction": 1.1,
+              "coup_restitution": 0.05
+            },
+            "morph_kwargs": {
+              "type": "mesh",
+              "file": "assets/objects/rec/object_0.glb",
+              "scale": 1.0
+            },
+            "surface_kwargs": {
+              "type": "default",
+              "color": [
+                0.2,
+                0.3,
+                0.85
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "basket": {
+      "tag": "basket_mesh",
+      "idx": 1,
+      "specs": [
+        {
+          "tag": "orange_basket_left",
+          "spawn_pos": [
+            0.51,
+            0.43,
+            -0.415
+          ],
+          "quat": [
+            0.70710678,
+            0.0,
+            0.0,
+            0.70710678
+          ],
+          "gs_path": "assets/objects/orange_basket/object_0.ply",
+          "entity_kwargs": {
+            "material_kwargs": {
+              "type": "rigid",
+              "needs_coup": true,
+              "coup_friction": 1.0
+            },
+            "morph_kwargs": {
+              "type": "mesh",
+              "file": "assets/objects/orange_basket/object_0.glb",
+              "scale": 0.2,
+              "fixed": true
+            },
+            "surface_kwargs": {
+              "type": "default",
+              "color": [
+                1.0,
+                0.45,
+                0.08
+              ]
+            }
+          }
+        },
+        {
+          "tag": "white_basket_right",
+          "spawn_pos": [
+            0.51,
+            -0.43,
+            -0.415
+          ],
+          "quat": [
+            0.70710678,
+            0.0,
+            0.0,
+            0.70710678
+          ],
+          "gs_path": "assets/objects/white_basket/object_0.ply",
+          "entity_kwargs": {
+            "material_kwargs": {
+              "type": "rigid",
+              "needs_coup": true,
+              "coup_friction": 1.0
+            },
+            "morph_kwargs": {
+              "type": "mesh",
+              "file": "assets/objects/white_basket/object_0.glb",
+              "scale": 0.2,
+              "fixed": true
+            },
+            "surface_kwargs": {
+              "type": "default",
+              "color": [
+                0.92,
+                0.92,
+                0.88
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "pairings": [
+      {
+        "arm": "right",
+        "target_tag": "arc_target",
+        "basket_tag": "white_basket_right"
+      },
+      {
+        "arm": "left",
+        "target_tag": "rec_target",
+        "basket_tag": "orange_basket_left"
+      }
+    ]
+  }
+}

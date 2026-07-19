@@ -1,0 +1,184 @@
+{
+  "_dataset": {
+    "repo_id": "JayCao99/rm65b-sort-v0",
+    "repo_type": "dataset",
+    "download": "hf download JayCao99/rm65b-sort-v0 --repo-type=dataset",
+    "robot_type": "rm65b",
+    "fps": 30,
+    "total_episodes": 240,
+    "total_frames": 116415,
+    "codebase_version": "v3.0",
+    "image_streams": [
+      "ego",
+      "wrist_left",
+      "wrist_right"
+    ],
+    "image_res_actual": [
+      320,
+      240
+    ],
+    "observation_state_dim": 28,
+    "observation_state_names": [
+      "left.tcp.x",
+      "left.tcp.y",
+      "left.tcp.z",
+      "left.tcp.qw",
+      "left.tcp.qx",
+      "left.tcp.qy",
+      "left.tcp.qz",
+      "left.joint.0",
+      "left.joint.1",
+      "left.joint.2",
+      "left.joint.3",
+      "left.joint.4",
+      "left.joint.5",
+      "left.gripper",
+      "right.tcp.x",
+      "right.tcp.y",
+      "right.tcp.z",
+      "right.tcp.qw",
+      "right.tcp.qx",
+      "right.tcp.qy",
+      "right.tcp.qz",
+      "right.joint.0",
+      "right.joint.1",
+      "right.joint.2",
+      "right.joint.3",
+      "right.joint.4",
+      "right.joint.5",
+      "right.gripper"
+    ],
+    "tcp_quat_convention": "wxyz",
+    "_note": "Bimanual: each arm = tcp(7) + joint(6) + gripper(1) = 14; 2 arms = 28. ego stream is fixed; wrist_left mounts on l_link6, wrist_right on r_link6 (see env.camera). Stream image res is 320x240; env.camera.res below (640x480) is the sim render res. Intrinsics are derived from fov + the actual loaded frame WH, so the mismatch is harmless."
+  },
+  "env": {
+    "scene": {
+      "plane_z": -0.5134,
+      "plane_friction": 0.8
+    },
+    "robot": {
+      "type": "realman_rm65b_bimanual",
+      "use_bimanual": true,
+      "train_arm_mode": "both",
+      "ik_method": "pink",
+      "pink_ik_threshold": 0.002,
+      "pink_ik_failure_mode": "noop",
+      "urdf": {
+        "left": "urdf/dual_rm_65b_with_PGI/urdf/leftarm_flip_PGI.urdf",
+        "right": "urdf/dual_rm_65b_with_PGI/urdf/rightarm_flip_PGI.urdf"
+      },
+      "joint_unit": "deg",
+      "n_arm_joints": 6,
+      "pos_left": [
+        -0.028727315366268158,
+        -0.004302432760596275,
+        -0.02304542437195778
+      ],
+      "quat_left": [
+        0.999908983707428,
+        -0.0020028548315167427,
+        -0.0003726990253198892,
+        0.013340454548597336
+      ],
+      "pos_right": [
+        -0.03154880926012993,
+        -0.0049382783472537994,
+        -0.026299787685275078
+      ],
+      "quat_right": [
+        0.9996034502983093,
+        -0.01991174928843975,
+        0.018323076888918877,
+        0.007793036289513111
+      ],
+      "home_qpos_left": [
+        0.6109,
+        -0.4363,
+        -1.309,
+        1.7453,
+        -0.8727,
+        2.3562,
+        0.04,
+        0.04
+      ],
+      "home_qpos_right": [
+        -0.6109,
+        0.4363,
+        1.309,
+        -1.7453,
+        0.8727,
+        0.7854,
+        0.04,
+        0.04
+      ]
+    },
+    "camera": {
+      "with_camera": true,
+      "mode": "ego_wrist",
+      "res": [
+        640,
+        480
+      ],
+      "ego_pos": [
+        0.13470219290510013,
+        -0.007301836404562939,
+        0.4166823402409252
+      ],
+      "ego_up": [
+        0.9346515697334705,
+        0.01343736121014113,
+        0.35531079850036357
+      ],
+      "ego_lookat": [
+        0.4896340276330704,
+        0.01703988031734537,
+        -0.5178928752397772
+      ],
+      "ego_fov": 63.809239458816485,
+      "wrist_pos": [
+        0.4,
+        0.0,
+        0.0
+      ],
+      "wrist_up": [
+        0.0,
+        1.0,
+        0.0
+      ],
+      "wrist_lookat": [
+        0.55,
+        0.0,
+        0.0
+      ],
+      "wrist_fov": 43.08,
+      "wrist_offset_T": [
+        [
+          -7.77156117e-16,
+          -0.962433314,
+          -0.27151817,
+          -0.0920119604
+        ],
+        [
+          -1.0,
+          8.82871582e-16,
+          -7.78315436e-16,
+          -2.25491822e-05
+        ],
+        [
+          9.88792381e-16,
+          0.27151817,
+          -0.962433314,
+          0.014760894
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "left_wrist_link_name": "l_link6",
+      "right_wrist_link_name": "r_link6"
+    }
+  }
+}

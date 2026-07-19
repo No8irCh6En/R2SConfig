@@ -1,0 +1,173 @@
+{
+  "env": {
+    "env_class": "sim.tasks.mug_tree:MugTreeEnv",
+    "seed": 0,
+    "n_envs": 1,
+    "max_episode_steps": 240,
+    "control_substeps": 3,
+    "include_sim_rgb": false,
+    "include_gs_rgb": false,
+    "sh_degree": 3,
+    "background": [0.6, 0.6, 0.6],
+    "rigid_options": {
+      "enable_self_collision": false
+    },
+    "vis_options": {
+      "show_cameras": false
+    },
+    "build_options": {
+      "env_spacing": [2.0, 2.0]
+    },
+    "scene": {
+      "plane_z": 0.0,
+      "plane_friction": 0.8
+    },
+    "robot": {
+      "type": "ufactory_xarm",
+      "use_bimanual": false,
+      "arm_side": "right",
+      "ik_method": "pink",
+      "pink_ik_threshold": 0.002,
+      "pink_ik_failure_mode": "noop",
+      "pos": [0.0, 0.0, 0.0],
+      "quat": [1.0, 0.0, 0.0, 0.0],
+      "home_qpos": [
+        0.014822, -1.063593, -0.012395, 0.923639, 0.028398, 2.003202, 0.047745,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+      ],
+      "home_gripper_int": 400,
+      "visualize_target": false
+    },
+    "camera": {
+      "with_camera": true,
+      "mode": "ego_wrist",
+      "res": [640, 480],
+      "single_pos": [0.9245847545698423, -0.2673257743957612, 0.29262734845356575],
+      "single_up": [-0.4026467988136912, 0.003829026388262067, 0.915347557959593],
+      "single_lookat": [0.009235366368733455, -0.26534719721519623, -0.11002849407999282],
+      "single_fov": 64.48189401393194,
+      "single_near": 0.01,
+      "single_far": 10.0,
+      "ego_pos": [0.9245847545698423, -0.2673257743957612, 0.29262734845356575],
+      "ego_up": [-0.4026467988136912, 0.003829026388262067, 0.915347557959593],
+      "ego_lookat": [0.009235366368733455, -0.26534719721519623, -0.11002849407999282],
+      "ego_fov": 64.48189401393194,
+      "ego_near": 0.01,
+      "ego_far": 10.0,
+      "wrist_fov": 64.5,
+      "wrist_near": 0.01,
+      "wrist_far": 10.0,
+      "wrist_link_name": "link7",
+      "wrist_offset_T": [
+        [0.0, 0.93253449, 0.36108092, 0.08890143],
+        [1.0, 0.0, 0.0, 0.0],
+        [0.0, 0.36108092, -0.93253449, 0.03220073],
+        [0.0, 0.0, 0.0, 1.0]
+      ]
+    },
+    "control": {
+    "scale_pos": 0.05,
+    "scale_rot": 0.2617993877991494,
+    "use_gripper_action": true
+  },
+    "observation": {
+      "full_observation": true,
+      "include_relative_observation": true
+    },
+    "mug": {
+      "asset_path": "assets/objects/blue_mug/object_0.glb",
+      "gs_path": "assets/objects/blue_mug/object_0.ply",
+      "spawn_pos": [0.19193625450134277, -0.2316906601190567, 0.04158436073184834],
+      "spawn_quat": [0.5264737636568251, 0.0, 0.0, 0.8501913762095081],
+      "random_xy": 0.0,
+      "random_yaw_deg": 0.0,
+      "handle_offset": [0.0, -0.066, 0.030],
+      "grasp_offset": [0.0, -0.008, 0.045],
+      "entity_kwargs": {
+        "material_kwargs": {
+          "type": "rigid",
+          "friction": 1.0,
+          "rho": 180.0
+        },
+        "morph_kwargs": {
+          "type": "mesh",
+          "file": "assets/objects/blue_mug/object_0.glb",
+          "scale": 0.110461378306150436,
+          "fixed": false,
+          "collision": true,
+          "decimate": true,
+          "decimate_face_num": 900,
+          "convexify": true,
+          "decompose_object_error_threshold": 0.03,
+          "recompute_inertia": true
+        }
+      }
+    },
+    "tree": {
+      "asset_path": "assets/objects/mug_tree/object_0.glb",
+      "gs_path": "assets/objects/mug_tree/object_0.ply",
+      "spawn_pos": [0.45027823400497437,
+        0.0007494972087442875,
+        4.088548627057703e-18],
+      "spawn_quat": [0.6107741537027124, 0.0, 0.0, 0.7918048580103152],
+      "active_hook_offset": [0.0, -0.12, 0.10],
+      "visualize_hook_target": false,
+      "entity_kwargs": {
+        "material_kwargs": {
+          "type": "rigid",
+          "friction": 1.0
+        },
+        "morph_kwargs": {
+          "type": "mesh",
+          "file": "assets/objects/mug_tree/object_0.glb",
+          "scale": 0.3246109657868901,
+          "fixed": true,
+          "collision": true,
+          "decimate": true,
+          "decimate_face_num": 1200,
+          "convexify": true,
+          "decompose_object_error_threshold": 0.08
+        }
+      }
+    },
+    "reward": {
+      "eef_to_mug_weight": 2.0,
+      "eef_to_mug_std": 0.12,
+      "handle_to_hook_weight": 4.0,
+      "handle_to_hook_std": 0.16,
+      "handle_xy_weight": 3.0,
+      "handle_xy_std": 0.06,
+      "handle_z_weight": 2.0,
+      "handle_z_std": 0.05,
+      "lift_weight": 1.0,
+      "lift_height_target": 0.12,
+      "grasp_weight": 0.2,
+      "action_rate_weight": -0.0001,
+      "success_bonus": 10.0,
+      "success_dist": 0.035,
+      "success_xy_dist": 0.030,
+      "success_z_dist": 0.025,
+      "success_min_lift": 0.08,
+      "success_hold_steps": 4,
+      "terminate_on_success": true
+    },
+    "gs_render": {
+      "enable": true,
+      "include_robot_gs": true,
+      "include_table_gs": true,
+      "workspace_dir": "experiments/real2sim/xarm/workspace_0606_v3_es_rb",
+      "color_align": true,
+      "color_align_scope": "image"
+    },
+    "sim_options": {
+      "dt": 0.01,
+      "substeps": 20,
+      "substeps_local": 1,
+      "requires_grad": false
+    },
+    "mpm_options": {
+      "lower_bound": [-1.0, -1.0, -0.2],
+      "upper_bound": [1.0, 1.0, 0.8]
+    }
+  }
+}
